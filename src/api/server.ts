@@ -4,9 +4,11 @@ import { serve } from "@hono/node-server";
 import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
+import cron from "node-cron";
 import type { Newsletter } from "../types";
 import { DEFAULT_PRICING } from "../types";
 import { NETWORKS, centsToPriceString } from "../payment/x402";
+import { compileNewsletter } from "../compiler/compile";
 
 /**
  * Morning Stew API Server
@@ -346,6 +348,53 @@ app.get("/internal/newsletters", (c) => {
   });
 });
 
+// ============================================================================
+// Layer 3: Autonomous Daily Generation (in-server cron)
+// ============================================================================
+
+async function generateAndPublish(): Promise<Newsletter | null> {
+  console.log(`\n[cron] 🍵 Starting daily newsletter generation at ${new Date().toISOString()}`);
+  
+  try {
+    const newsletter = await compileNewsletter({
+      headless: true,
+    });
+    
+    newsletters.set(newsletter.id, newsletter);
+    console.log(`[cron] ✅ Published: ${newsletter.id} - "${newsletter.name}"`);
+    console.log(`[cron]    Discoveries: ${newsletter.discoveries.length}`);
+    console.log(`[cron]    Tokens: ${newsletter.tokenCount}`);
+    
+    return newsletter;
+  } catch (error) {
+    console.error(`[cron] ❌ Generation failed:`, error);
+    return null;
+  }
+}
+
+// Schedule: 6 AM PT = 1 PM UTC (13:00)
+// Cron: minute hour day month weekday
+const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "0 13 * * *";
+const ENABLE_CRON = process.env.DISABLE_CRON !== "true";
+
+if (ENABLE_CRON) {
+  cron.schedule(CRON_SCHEDULE, async () => {
+    await generateAndPublish();
+  }, {
+    timezone: "UTC",
+  });
+  console.log(`[cron] Scheduled daily generation: ${CRON_SCHEDULE} UTC`);
+}
+
+// Manual trigger endpoint (for testing)
+app.post("/internal/generate", async (c) => {
+  const newsletter = await generateAndPublish();
+  if (newsletter) {
+    return c.json({ success: true, id: newsletter.id, name: newsletter.name });
+  }
+  return c.json({ success: false, error: "Generation failed" }, 500);
+});
+
 // Start server
 const port = Number(process.env.PORT) || 3000;
 
@@ -364,14 +413,16 @@ console.log(`
    Network:    ${NETWORK}
    Receiver:   ${RECEIVER_ADDRESS}
    Facilitator: ${FACILITATOR_URL}
+   Cron:       ${ENABLE_CRON ? CRON_SCHEDULE + " UTC (6 AM PT)" : "DISABLED"}
 
 Endpoints:
-   GET  /                    Health check
-   GET  /v1/latest           Latest issue preview (free)
-   GET  /v1/issues           List all issues (free)
-   GET  /v1/issues/:id       Full issue (X402 gated)
-   GET  /v1/subscribe        Subscription info
-   POST /internal/newsletters  Add newsletter
+   GET  /                       Health check + discovery
+   GET  /.well-known/x402.json  Machine-readable API spec
+   GET  /skill.md               Agent-readable docs
+   GET  /v1/latest              Latest issue preview (free)
+   GET  /v1/issues              List all issues (free)
+   GET  /v1/issues/:id          Full issue (X402 gated - $0.05)
+   POST /internal/generate      Trigger generation manually
 `);
 
 serve({
