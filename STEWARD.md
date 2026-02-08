@@ -126,7 +126,22 @@ curl -X POST https://morning-stew-production.up.railway.app/internal/generate
 - **Network**: Base Sepolia (testnet)
 - **Receiver wallet**: 0x7873D7d9DABc0722c1e88815193c83B260058553
 
-You do not need to handle payments - the API server does this automatically via X402.
+The API server handles incoming payments automatically via X402.
+
+## Your Wallet (Agent Identity)
+
+Your persistent wallet for making X402 payments to other services:
+
+- **Address**: 0xeEfAcaf1227d6Cdf38f4F1d5c05c605EcDF020F4
+- **Credentials**: ~/.openclaw/credentials/wallet/agent-wallet.json
+- **Network**: Base Sepolia (testnet)
+
+Use this wallet when you need to:
+- Pay for enrichment APIs (data-enrichment skill)
+- Pay for social intelligence (posting tweets)
+- Pay for any X402-gated service
+
+Load the wallet with the evm-wallet skill when needed.
 
 ## Success Criteria
 
