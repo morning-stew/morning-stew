@@ -376,10 +376,50 @@ async function generateAndPublish(): Promise<Newsletter | null> {
 // Cron: minute hour day month weekday
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "0 13 * * *";
 const ENABLE_CRON = process.env.DISABLE_CRON !== "true";
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+async function notifyTelegram(message: string): Promise<void> {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.log("[telegram] Not configured, skipping notification");
+    return;
+  }
+  
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text: message,
+        parse_mode: "Markdown",
+      }),
+    });
+    console.log("[telegram] Notification sent");
+  } catch (error) {
+    console.error("[telegram] Failed to send:", error);
+  }
+}
 
 if (ENABLE_CRON) {
   cron.schedule(CRON_SCHEDULE, async () => {
-    await generateAndPublish();
+    const newsletter = await generateAndPublish();
+    
+    if (newsletter) {
+      // Notify OpenClaw via Telegram
+      await notifyTelegram(
+        `🍵 *Morning Stew Generated*\n\n` +
+        `*Issue:* ${newsletter.id}\n` +
+        `*Name:* "${newsletter.name}"\n` +
+        `*Discoveries:* ${newsletter.discoveries.length}\n\n` +
+        `Please announce this on Twitter. Link: https://morning-stew-production.up.railway.app/v1/issues/${newsletter.id}`
+      );
+    } else {
+      await notifyTelegram(
+        `❌ *Morning Stew Generation Failed*\n\n` +
+        `Check Railway logs and diagnose the issue.`
+      );
+    }
   }, {
     timezone: "UTC",
   });
