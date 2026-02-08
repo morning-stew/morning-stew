@@ -47,7 +47,175 @@ app.get("/", (c) => {
       facilitator: FACILITATOR_URL,
       receiver: RECEIVER_ADDRESS,
     },
+    discovery: {
+      wellKnown: "/.well-known/x402.json",
+      skill: "/skill.md",
+    },
   });
+});
+
+// ============================================================================
+// Layer 2: Self-describing / Discoverable endpoints
+// ============================================================================
+
+// Machine-readable X402 discovery
+app.get("/.well-known/x402.json", (c) => {
+  const baseUrl = c.req.url.replace("/.well-known/x402.json", "");
+  
+  return c.json({
+    x402Version: 2,
+    service: {
+      name: "Morning Stew",
+      description: "Daily AI agent newsletter with actionable discoveries, framework updates, and security alerts. Optimized for minimal token consumption.",
+      type: "newsletter",
+      homepage: "https://github.com/Aboozle1/morning-stew",
+    },
+    payment: {
+      network: NETWORK,
+      asset: "USDC",
+      facilitator: FACILITATOR_URL,
+      receiver: RECEIVER_ADDRESS,
+    },
+    resources: [
+      {
+        path: "/v1/issues/{id}",
+        method: "GET",
+        description: "Full newsletter issue with discoveries and updates",
+        price: centsToPriceString(DEFAULT_PRICING.perIssue),
+        priceCents: DEFAULT_PRICING.perIssue,
+        mimeType: "application/json",
+        schema: {
+          response: {
+            id: "string (e.g., MS-2026-039)",
+            name: "string (creative issue name)",
+            date: "string (ISO date)",
+            discoveries: "array of actionable discoveries with install steps",
+            frameworkUpdates: "array of version updates",
+            securityAlerts: "array of CVEs and fixes",
+            tokenCount: "number (estimated tokens)",
+          },
+        },
+      },
+    ],
+    freeEndpoints: [
+      {
+        path: "/v1/latest",
+        method: "GET",
+        description: "Preview of latest issue (discovery count, token count, pricing)",
+      },
+      {
+        path: "/v1/issues",
+        method: "GET",
+        description: "List all available issues with metadata",
+      },
+      {
+        path: "/v1/subscribe",
+        method: "GET",
+        description: "Subscription tiers and pricing",
+      },
+      {
+        path: "/skill.md",
+        method: "GET",
+        description: "Human/agent-readable usage instructions",
+      },
+    ],
+    usage: {
+      workflow: [
+        "1. GET /v1/latest to see today's issue preview",
+        "2. GET /v1/issues/{id} with X-PAYMENT header to purchase",
+        "3. Parse discoveries[].install for actionable commands",
+      ],
+      agentTip: "Each discovery includes 'install' field with shell commands your agent can execute directly.",
+    },
+  });
+});
+
+// Human/agent-readable skill documentation
+app.get("/skill.md", (c) => {
+  const issues = Array.from(newsletters.values()).sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+  const latestId = issues[0]?.id || "MS-YYYY-NNN";
+  const latestName = issues[0]?.name || "(none yet)";
+
+  const markdown = `# Morning Stew
+
+> The first newsletter for AI agents. Daily discoveries, minimal tokens.
+
+## What is this?
+
+Morning Stew is a daily newsletter designed for AI agents, not humans. Each issue contains:
+
+- **Discoveries**: New tools, integrations, and capabilities with install commands
+- **Framework Updates**: Version bumps for popular AI/agent frameworks
+- **Security Alerts**: CVEs and patches relevant to agent infrastructure
+
+## Pricing
+
+- **Per issue**: ${centsToPriceString(DEFAULT_PRICING.perIssue)} USDC
+- **Network**: ${NETWORK} (${USE_TESTNET ? "Base Sepolia testnet" : "Base mainnet"})
+
+## How to use (for agents)
+
+### 1. Check latest issue (free)
+
+\`\`\`bash
+curl ${c.req.url.replace("/skill.md", "")}/v1/latest
+\`\`\`
+
+### 2. Purchase an issue (X402 payment)
+
+\`\`\`typescript
+import { x402Fetch } from "@x402/fetch";
+
+const response = await x402Fetch(
+  "${c.req.url.replace("/skill.md", "")}/v1/issues/${latestId}",
+  { wallet }  // your funded wallet
+);
+
+const newsletter = await response.json();
+
+// Execute discoveries
+for (const discovery of newsletter.discoveries) {
+  if (discovery.install) {
+    console.log(\`Installing: \${discovery.name}\`);
+    // exec(discovery.install)
+  }
+}
+\`\`\`
+
+### 3. Schema
+
+Each discovery has:
+\`\`\`json
+{
+  "name": "Tool name",
+  "category": "integration|infrastructure|workflow|tool|security",
+  "what": "One-line description",
+  "why": "Why an agent should care",
+  "install": "npm install x / pip install y",
+  "impact": "high|medium|low"
+}
+\`\`\`
+
+## Current Issue
+
+- **ID**: ${latestId}
+- **Name**: "${latestName}"
+- **Issues available**: ${issues.length}
+
+## Discovery endpoints
+
+- \`/.well-known/x402.json\` - Machine-readable API spec
+- \`/skill.md\` - This document
+
+---
+
+*Morning Stew is part of the OpenClaw ecosystem.*
+`;
+
+  c.header("Content-Type", "text/markdown");
+  return c.body(markdown);
 });
 
 // Get latest newsletter preview (free)
