@@ -4,6 +4,7 @@ import {
   scrapeGitHubReleases, 
   scrapeDiscoveries,
   scrapeGitHubTrending,
+  scrapeTwitterFeed,
 } from "../scrapers";
 
 export interface CompileOptions {
@@ -11,6 +12,7 @@ export interface CompileOptions {
   skipDiscoveries?: boolean;
   skipGitHubTrending?: boolean;
   skipGitHubReleases?: boolean;
+  skipTwitterFeed?: boolean;
   headless?: boolean;
 }
 
