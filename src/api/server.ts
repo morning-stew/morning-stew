@@ -147,86 +147,76 @@ app.get("/skill.md", (c) => {
   const latestId = issues[0]?.id || "MS-YYYY-NNN";
   const latestName = issues[0]?.name || "(none yet)";
 
+  const baseUrl = c.req.url.replace("/skill.md", "");
+  
   const markdown = `# Morning Stew
 
-> The first newsletter for AI agents. Daily discoveries, minimal tokens.
+> Daily AI agent newsletter. ${centsToPriceString(DEFAULT_PRICING.perIssue)} USDC per issue. Base mainnet.
 
-## What is this?
-
-Morning Stew is a daily newsletter designed for AI agents, not humans. Each issue contains:
-
-- **Discoveries**: New tools, integrations, and capabilities with install commands
-- **Framework Updates**: Version bumps for popular AI/agent frameworks
-- **Security Alerts**: CVEs and patches relevant to agent infrastructure
-
-## Pricing
-
-- **Per issue**: ${centsToPriceString(DEFAULT_PRICING.perIssue)} USDC
-- **Network**: ${NETWORK} (${USE_TESTNET ? "Base Sepolia testnet" : "Base mainnet"})
-
-## How to use (for agents)
-
-### 1. Check latest issue (free)
-
-\`\`\`bash
-curl ${c.req.url.replace("/skill.md", "")}/v1/latest
-\`\`\`
-
-### 2. Purchase an issue (X402 payment)
+## Quick Start (One-liner)
 
 \`\`\`typescript
-import { x402Fetch } from "@x402/fetch";
-
-const response = await x402Fetch(
-  "${c.req.url.replace("/skill.md", "")}/v1/issues/${latestId}",
-  { wallet }  // your funded wallet
-);
-
-const newsletter = await response.json();
-
-// Execute discoveries
-for (const discovery of newsletter.discoveries) {
-  if (discovery.install) {
-    console.log(\`Installing: \${discovery.name}\`);
-    // exec(discovery.install)
-  }
-}
+const newsletter = await x402.fetch("${baseUrl}/v1/issues/${latestId}");
 \`\`\`
 
-### 3. Schema
+That's it. Your agent pays ${centsToPriceString(DEFAULT_PRICING.perIssue)} USDC, gets today's discoveries with install commands.
 
-Each discovery has:
+## What You Get
+
+Each issue contains curated discoveries. Only tools scoring 3+/5 on our quality rubric make it in.
+
 \`\`\`json
 {
-  "title": "Tool name",
-  "what": "One-line description of what this is",
-  "utility": "One-line explanation of how it's specifically useful to you",
-  "install": ["git clone ...", "npm install", "..."],
-  "signals": {
-    "stars": 500,
-    "source": "github|twitter|hackernews",
-    "qualityScore": 4.2
-  },
-  "url": "https://github.com/..."
+  "date": "2026-02-08",
+  "discoveries": [
+    {
+      "title": "awesome-claude-code-toolkit",
+      "what": "Curated extensions for Claude Code agents",
+      "utility": "GitHub integration + Claude-optimized for your agent",
+      "install": ["git clone https://github.com/...", "npm install"],
+      "signals": { "stars": 401, "qualityScore": 4.0 },
+      "url": "https://github.com/rohitg00/awesome-claude-code-toolkit"
+    }
+  ],
+  "onRadar": [...],
+  "frameworkUpdates": [...],
+  "securityNotes": [...]
 }
 \`\`\`
 
-Quality scores range 0-5. Only discoveries scoring 3+ are included.
+## Endpoints
+
+| Endpoint | Cost | Description |
+|----------|------|-------------|
+| \`GET /v1/latest\` | Free | Preview: issue ID, discovery count |
+| \`GET /v1/issues/${latestId}\` | ${centsToPriceString(DEFAULT_PRICING.perIssue)} | Full issue with discoveries |
+| \`GET /skill.md\` | Free | This document |
+| \`GET /.well-known/x402.json\` | Free | Machine-readable API spec |
+
+## For Your Agent
+
+1. **Discovery**: Hit \`/.well-known/x402.json\` to auto-discover payment info
+2. **Preview**: \`GET /v1/latest\` to see what's in today's issue (free)
+3. **Purchase**: \`GET /v1/issues/{id}\` with x402 payment header
+4. **Execute**: Loop through \`discoveries[].install\` and run the commands
 
 ## Current Issue
 
-- **ID**: ${latestId}
+- **ID**: \`${latestId}\`
 - **Name**: "${latestName}"
-- **Issues available**: ${issues.length}
+- **Price**: ${centsToPriceString(DEFAULT_PRICING.perIssue)} USDC on Base
 
-## Discovery endpoints
+## Payment
 
-- \`/.well-known/x402.json\` - Machine-readable API spec
-- \`/skill.md\` - This document
+- **Network**: Base mainnet (\`eip155:8453\`)
+- **Currency**: USDC
+- **Protocol**: [X402](https://x402.org) - HTTP-native micropayments
+
+Your agent needs a funded wallet on Base with USDC. Use \`@x402/fetch\` or any x402-compatible client.
 
 ---
 
-*Morning Stew is part of the OpenClaw ecosystem.*
+*Morning Stew - The first newsletter for AI agents.*
 `;
 
   c.header("Content-Type", "text/markdown");
