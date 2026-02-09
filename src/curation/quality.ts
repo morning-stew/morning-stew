@@ -271,43 +271,124 @@ export async function scoreDiscovery(discovery: Discovery): Promise<QualityScore
 }
 
 /**
- * Generate a compelling value proposition for a discovery
+ * Generate a compelling value proposition for a discovery.
+ * 
+ * Must answer: "Why should I (an agent) care about this?"
+ * Should be SPECIFIC to the tool, not generic category-based.
  */
 export function generateValueProp(discovery: Discovery): string {
+  const title = discovery.title;
   const what = discovery.what.toLowerCase();
-  const category = discovery.category;
+  const desc = discovery.oneLiner.toLowerCase();
+  const combined = `${what} ${desc}`;
 
-  // Don't just restate the title - explain the problem it solves
-  const patterns: Array<{ match: RegExp | string; template: string }> = [
-    { match: /sandbox|isolat|container/, template: "Run untrusted code safely without risking your system" },
-    { match: /mcp|server/, template: "Extend your agent's capabilities with new tools and data sources" },
-    { match: /local|private|self-host/, template: "Keep everything on your machine—no API keys or data sharing needed" },
-    { match: /monitor|observe|log/, template: "See exactly what your agent is doing and why" },
-    { match: /automat|workflow/, template: "Automate repetitive tasks without manual intervention" },
-    { match: /memory|persist|remember/, template: "Give your agent context that persists across sessions" },
-    { match: /browser|web|scrape/, template: "Let your agent interact with websites like a human would" },
-    { match: /code|edit|refactor/, template: "Automate code changes across your entire codebase" },
-    { match: /deploy|ship|ci/, template: "Ship code faster with automated deployment" },
-    { match: /test|validate/, template: "Catch bugs before they reach production" },
+  // Extract specific capabilities from description
+  const capabilities: string[] = [];
+
+  // Detect specific integrations
+  if (combined.includes("twitter") || combined.includes("x.com")) capabilities.push("Twitter/X integration");
+  if (combined.includes("github")) capabilities.push("GitHub integration");
+  if (combined.includes("slack")) capabilities.push("Slack integration");
+  if (combined.includes("discord")) capabilities.push("Discord integration");
+  if (combined.includes("notion")) capabilities.push("Notion integration");
+  if (combined.includes("postgres") || combined.includes("sql")) capabilities.push("database access");
+  if (combined.includes("browser") || combined.includes("puppeteer") || combined.includes("playwright")) capabilities.push("web browsing");
+  if (combined.includes("file") || combined.includes("filesystem")) capabilities.push("file system access");
+  
+  // Detect specific functions
+  if (combined.includes("research")) capabilities.push("automated research");
+  if (combined.includes("scrape") || combined.includes("crawl")) capabilities.push("web scraping");
+  if (combined.includes("memory") || combined.includes("persist")) capabilities.push("persistent memory");
+  if (combined.includes("sandbox") || combined.includes("isolat")) capabilities.push("safe code execution");
+  if (combined.includes("pipeline") || combined.includes("workflow")) capabilities.push("multi-step workflows");
+  if (combined.includes("team") || combined.includes("collaborat")) capabilities.push("multi-agent coordination");
+  if (combined.includes("monitor") || combined.includes("observ")) capabilities.push("execution monitoring");
+  if (combined.includes("test")) capabilities.push("automated testing");
+  if (combined.includes("deploy")) capabilities.push("deployment automation");
+
+  // Detect agent-specific value
+  if (combined.includes("mcp")) capabilities.push("MCP server");
+  if (combined.includes("claude") || combined.includes("anthropic")) capabilities.push("Claude-optimized");
+  if (combined.includes("skill")) capabilities.push("agent skill");
+  if (combined.includes("tool")) capabilities.push("agent tooling");
+
+  // Build value prop from detected capabilities
+  if (capabilities.length >= 2) {
+    return `${capabilities.slice(0, 2).join(" + ")} for your agent`;
+  } else if (capabilities.length === 1) {
+    return `Adds ${capabilities[0]} to your agent`;
+  }
+
+  // Fallback: Extract action verb from description
+  const actionVerbs = [
+    { pattern: /automat(e|es|ing)/, value: "Automates" },
+    { pattern: /manag(e|es|ing)/, value: "Manages" },
+    { pattern: /generat(e|es|ing)/, value: "Generates" },
+    { pattern: /analyz(e|es|ing)|analysis/, value: "Analyzes" },
+    { pattern: /connect(s|ing)?/, value: "Connects" },
+    { pattern: /extend(s|ing)?/, value: "Extends" },
+    { pattern: /simpli(fy|fies|fying)/, value: "Simplifies" },
+    { pattern: /enabl(e|es|ing)/, value: "Enables" },
   ];
 
-  for (const { match, template } of patterns) {
-    if (typeof match === "string" ? what.includes(match) : match.test(what)) {
-      return `${discovery.title} - ${template}`;
+  for (const { pattern, value } of actionVerbs) {
+    if (pattern.test(combined)) {
+      // Extract what it does from the description
+      const whatItDoes = discovery.oneLiner.slice(0, 60).replace(/^[^-]*-\s*/, "");
+      if (whatItDoes.length > 10) {
+        return `${value} ${whatItDoes}`;
+      }
     }
   }
 
-  // Fallback: Try to extract value from the description
-  if (discovery.impact && discovery.impact.length > 20) {
-    return `${discovery.title} - ${discovery.impact}`;
+  // Last resort: Use the oneLiner if it's descriptive enough
+  if (discovery.oneLiner.length > 20 && discovery.oneLiner !== title) {
+    // Clean up the oneLiner
+    const cleaned = discovery.oneLiner
+      .replace(/^A\s+/i, "")
+      .replace(/^An\s+/i, "")
+      .replace(/^The\s+/i, "");
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
   }
 
-  // Last resort: Use oneLiner but ensure it's not just the title
-  if (discovery.oneLiner !== discovery.title) {
-    return `${discovery.title} - ${discovery.oneLiner}`;
-  }
+  return `${discovery.category} capability for agents`;
+}
 
-  return `${discovery.title} - ${category} for AI agents`;
+/**
+ * Generate agent-readable format for a discovery.
+ * This is what gets sent to paying agents.
+ */
+export interface AgentDiscovery {
+  title: string;
+  what: string;         // One-liner: what is this?
+  utility: string;      // One-liner: how is it specifically useful?
+  install: string[];    // Copy-paste install commands
+  signals: {            // Trust/quality signals
+    stars?: number;
+    engagement?: number;
+    lastUpdated?: string;
+    source: string;
+    qualityScore: number;
+  };
+  url: string;
+}
+
+export function toAgentFormat(discovery: CuratedDiscovery): AgentDiscovery {
+  return {
+    title: discovery.title,
+    what: discovery.oneLiner.slice(0, 120),
+    utility: discovery.valueProp,
+    install: discovery.install.steps.filter(s => 
+      !s.startsWith("#") || s.includes("npm") || s.includes("pip") || s.includes("git")
+    ).slice(0, 5),
+    signals: {
+      stars: discovery.signals?.engagement,
+      engagement: discovery.signals?.engagement,
+      source: discovery.source.type,
+      qualityScore: discovery.qualityScore.total,
+    },
+    url: discovery.source.url,
+  };
 }
 
 /**

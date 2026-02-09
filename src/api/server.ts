@@ -198,14 +198,20 @@ for (const discovery of newsletter.discoveries) {
 Each discovery has:
 \`\`\`json
 {
-  "name": "Tool name",
-  "category": "integration|infrastructure|workflow|tool|security",
-  "what": "One-line description",
-  "why": "Why an agent should care",
-  "install": "npm install x / pip install y",
-  "impact": "high|medium|low"
+  "title": "Tool name",
+  "what": "One-line description of what this is",
+  "utility": "One-line explanation of how it's specifically useful to you",
+  "install": ["git clone ...", "npm install", "..."],
+  "signals": {
+    "stars": 500,
+    "source": "github|twitter|hackernews",
+    "qualityScore": 4.2
+  },
+  "url": "https://github.com/..."
 }
 \`\`\`
+
+Quality scores range 0-5. Only discoveries scoring 3+ are included.
 
 ## Current Issue
 
@@ -310,7 +316,53 @@ app.get("/v1/issues/:id", async (c) => {
 
   // If we reach here, payment was verified by X402 middleware
   console.log(`[api] Payment received for ${newsletter.id}`);
-  return c.json(newsletter);
+  
+  // Return agent-optimized format
+  const agentResponse = {
+    id: newsletter.id,
+    name: newsletter.name,
+    date: newsletter.date,
+    isQuietWeek: newsletter.isQuietWeek || false,
+    
+    // Main content: curated discoveries in agent-readable format
+    discoveries: newsletter.discoveries.map(d => ({
+      title: d.title,
+      what: d.oneLiner.slice(0, 120),
+      utility: d.valueProp,
+      install: d.install.steps.filter((s: string) => 
+        !s.startsWith("#") || s.includes("npm") || s.includes("pip") || s.includes("git")
+      ).slice(0, 5),
+      signals: {
+        stars: d.signals?.engagement,
+        source: d.source.type,
+        qualityScore: d.qualityScore?.total || 0,
+      },
+      url: d.source.url,
+    })),
+    
+    // Promising but not ready
+    onRadar: newsletter.onRadar?.map(item => ({
+      title: item.title,
+      reason: item.reason,
+      url: item.url,
+    })),
+    
+    // Framework updates
+    frameworkUpdates: newsletter.frameworkUpdates.map(u => ({
+      title: u.title,
+      summary: u.summary,
+      breaking: u.breaking,
+      url: u.url,
+    })),
+    
+    // Security notes
+    securityNotes: newsletter.securityNotes,
+    
+    // Meta
+    tokenCount: newsletter.tokenCount,
+  };
+  
+  return c.json(agentResponse);
 });
 
 // Subscription info (free)
