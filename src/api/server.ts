@@ -25,7 +25,7 @@ const NETWORK = USE_TESTNET ? NETWORKS.BASE_SEPOLIA : NETWORKS.BASE_MAINNET;
 // Facilitator: Use CDP for mainnet, x402.org for testnet
 const FACILITATOR_URL = USE_TESTNET 
   ? "https://x402.org/facilitator" 
-  : undefined; // Will use CDP facilitator object for mainnet
+  : "cdp"; // CDP facilitator for mainnet (built into @coinbase/x402)
 
 // In-memory store (replace with Filecoin/IPFS in production)
 const newsletters = new Map<string, Newsletter>();
@@ -34,7 +34,7 @@ const newsletters = new Map<string, Newsletter>();
 // For mainnet, use CDP's facilitator which handles auth automatically via env vars
 // Set CDP_API_KEY_ID and CDP_API_KEY_SECRET in environment
 const facilitatorClient = USE_TESTNET
-  ? new HTTPFacilitatorClient({ url: FACILITATOR_URL! })
+  ? new HTTPFacilitatorClient({ url: "https://x402.org/facilitator" })
   : new HTTPFacilitatorClient(cdpFacilitator);
 
 const x402Server = new x402ResourceServer(facilitatorClient)
