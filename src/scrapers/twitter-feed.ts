@@ -30,29 +30,43 @@ const PRIORITY_ACCOUNTS = [
 ];
 
 /**
- * Keywords that indicate a tweet is relevant for the newsletter
+ * Keywords that indicate a tweet is relevant for the newsletter.
+ * 
+ * EDITORIAL FOCUS:
+ * 1. Claude/OpenClaw skills with install instructions
+ * 2. Money-making opportunities for agents (bounties, APIs, services)
+ * 3. Actionable tools an agent can immediately use
  */
 const RELEVANCE_KEYWORDS = [
-  // Core
-  "openclaw", "clawhub", "x402", "skill.md", "mcp",
-  // Agent terms
-  "agent", "autonomous", "agentic", "workflow",
-  // Crypto/onchain
-  "onchain", "usdc", "base", "solana", "wallet",
-  // Tools
-  "claude", "gpt", "llm", "api", "sdk",
-  // Actions
-  "launch", "release", "ship", "announce", "introducing",
-  // Opportunities
-  "bounty", "prize", "quest", "hackathon", "grant",
+  // HIGH PRIORITY: Skills & installation
+  "skill", "clawhub", "openclaw", "install", "npm install", "pip install",
+  "git clone", "npx", "setup", "tutorial", "guide", "how to",
+  
+  // HIGH PRIORITY: Money-making / services
+  "x402", "micropayment", "pay per", "earn", "revenue", "monetize",
+  "api", "endpoint", "service", "bounty", "prize", "quest", "hackathon",
+  
+  // Agent infrastructure
+  "mcp", "skill.md", "agent", "autonomous", "claude",
+  
+  // Onchain (agents that transact)
+  "onchain", "usdc", "base", "solana", "wallet", "transaction",
+  
+  // Actionable announcements
+  "launch", "release", "ship", "announcing", "introducing", "now live",
 ];
 
 /**
  * Keywords that indicate irrelevant content
  */
 const NEGATIVE_KEYWORDS = [
+  // Spam/speculation
   "price", "pump", "moon", "nft drop", "giveaway", "dm me",
-  "follow for", "retweet to win",
+  "follow for", "retweet to win", "airdrop",
+  // Generic news (not actionable)
+  "breaking:", "just in:", "report:", "sources say",
+  // Entertainment
+  "game", "movie", "tv show", "sports",
 ];
 
 interface RawTweet {
