@@ -4,6 +4,7 @@ import { serve } from "@hono/node-server";
 import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
+import { facilitator as cdpFacilitator } from "@coinbase/x402";
 import cron from "node-cron";
 import type { Newsletter } from "../types";
 import { DEFAULT_PRICING } from "../types";
@@ -20,15 +21,21 @@ import { compileNewsletter } from "../compiler/compile";
 const RECEIVER_ADDRESS = process.env.RECEIVER_ADDRESS || "0x7873D7d9DABc0722c1e88815193c83B260058553";
 const USE_TESTNET = process.env.USE_TESTNET !== "false";
 const NETWORK = USE_TESTNET ? NETWORKS.BASE_SEPOLIA : NETWORKS.BASE_MAINNET;
-const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://x402.org/facilitator";
+
+// Facilitator: Use CDP for mainnet, x402.org for testnet
+const FACILITATOR_URL = USE_TESTNET 
+  ? "https://x402.org/facilitator" 
+  : undefined; // Will use CDP facilitator object for mainnet
 
 // In-memory store (replace with Filecoin/IPFS in production)
 const newsletters = new Map<string, Newsletter>();
 
 // Initialize X402 facilitator client and resource server
-const facilitatorClient = new HTTPFacilitatorClient({
-  url: FACILITATOR_URL,
-});
+// For mainnet, use CDP's facilitator which handles auth automatically via env vars
+// Set CDP_API_KEY_ID and CDP_API_KEY_SECRET in environment
+const facilitatorClient = USE_TESTNET
+  ? new HTTPFacilitatorClient({ url: FACILITATOR_URL! })
+  : new HTTPFacilitatorClient(cdpFacilitator);
 
 const x402Server = new x402ResourceServer(facilitatorClient)
   .register(NETWORK, new ExactEvmScheme());
