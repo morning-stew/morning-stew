@@ -112,12 +112,12 @@ export function createSubscription(
 
   return {
     id: `sub_${transactionHash.slice(0, 16)}`,
-    agentId,
+    walletAddress: agentId.toLowerCase(),
     tier,
     chain: chainMap[network] || "base",
     currency: "USDC",
     createdAt: now.toISOString(),
     expiresAt,
-    issuesPurchased: tier === "per_issue" ? [] : undefined,
+    issuesRemaining: tier === "bulk_250" ? 250 : undefined,
   };
 }

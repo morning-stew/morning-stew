@@ -6,8 +6,8 @@ import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { facilitator as cdpFacilitator } from "@coinbase/x402";
 import cron from "node-cron";
-import type { Newsletter } from "../types";
-import { DEFAULT_PRICING } from "../types";
+import type { Newsletter, Subscription } from "../types";
+import { DEFAULT_PRICING, BULK_ISSUE_COUNT } from "../types";
 import { NETWORKS, centsToPriceString } from "../payment/x402";
 import { compileNewsletter } from "../compiler/compile";
 
@@ -29,6 +29,36 @@ const FACILITATOR_URL = USE_TESTNET
 
 // In-memory store (replace with Filecoin/IPFS in production)
 const newsletters = new Map<string, Newsletter>();
+
+// Subscription store: wallet address (lowercase) -> subscription
+const subscriptions = new Map<string, Subscription>();
+
+/**
+ * Check if a wallet has an active subscription with remaining issues
+ */
+function checkSubscription(walletAddress: string): { active: boolean; remaining?: number } {
+  const sub = subscriptions.get(walletAddress.toLowerCase());
+  if (!sub) return { active: false };
+  
+  if (sub.tier === "bulk_250" && sub.issuesRemaining && sub.issuesRemaining > 0) {
+    return { active: true, remaining: sub.issuesRemaining };
+  }
+  
+  return { active: false };
+}
+
+/**
+ * Decrement subscription issue count
+ */
+function useSubscriptionIssue(walletAddress: string): boolean {
+  const sub = subscriptions.get(walletAddress.toLowerCase());
+  if (!sub || !sub.issuesRemaining || sub.issuesRemaining <= 0) return false;
+  
+  sub.issuesRemaining--;
+  subscriptions.set(walletAddress.toLowerCase(), sub);
+  console.log(`[subscription] ${walletAddress} used 1 issue, ${sub.issuesRemaining} remaining`);
+  return true;
+}
 
 // Initialize X402 facilitator client and resource server
 // For mainnet, use CDP's facilitator which handles auth automatically via env vars
@@ -184,21 +214,37 @@ Each issue contains curated discoveries. Only tools scoring 3+/5 on our quality 
 }
 \`\`\`
 
+## Subscription (Recommended)
+
+Pay once, get ${BULK_ISSUE_COUNT} issues. No per-request payments.
+
+\`\`\`typescript
+// Subscribe for ${BULK_ISSUE_COUNT} issues ($${(DEFAULT_PRICING.bulk250 / 100).toFixed(2)} USDC)
+await x402.fetch("${baseUrl}/v1/subscribe/bulk", { method: "POST" });
+
+// Then access issues with just your wallet header (no payment needed)
+const newsletter = await fetch("${baseUrl}/v1/issues/${latestId}", {
+  headers: { "X-SUBSCRIBER-WALLET": "0xYourWallet..." }
+});
+\`\`\`
+
+Check your status: \`GET /v1/subscribe/status/{wallet}\`
+
 ## Endpoints
 
 | Endpoint | Cost | Description |
 |----------|------|-------------|
 | \`GET /v1/latest\` | Free | Preview: issue ID, discovery count |
-| \`GET /v1/issues/${latestId}\` | ${centsToPriceString(DEFAULT_PRICING.perIssue)} | Full issue with discoveries |
+| \`GET /v1/issues/{id}\` | ${centsToPriceString(DEFAULT_PRICING.perIssue)} | Full issue (or free with subscription) |
+| \`POST /v1/subscribe/bulk\` | $${(DEFAULT_PRICING.bulk250 / 100).toFixed(2)} | Subscribe for ${BULK_ISSUE_COUNT} issues |
+| \`GET /v1/subscribe/status/{wallet}\` | Free | Check subscription status |
 | \`GET /skill.md\` | Free | This document |
-| \`GET /.well-known/x402.json\` | Free | Machine-readable API spec |
 
 ## For Your Agent
 
-1. **Discovery**: Hit \`/.well-known/x402.json\` to auto-discover payment info
-2. **Preview**: \`GET /v1/latest\` to see what's in today's issue (free)
-3. **Purchase**: \`GET /v1/issues/{id}\` with x402 payment header
-4. **Execute**: Loop through \`discoveries[].install\` and run the commands
+1. **Subscribe once**: \`POST /v1/subscribe/bulk\` with x402 payment ($${(DEFAULT_PRICING.bulk250 / 100).toFixed(2)})
+2. **Access issues**: \`GET /v1/issues/{id}\` with \`X-SUBSCRIBER-WALLET\` header
+3. **Execute**: Loop through \`discoveries[].install\` and run the commands
 
 ## Current Issue
 
@@ -277,8 +323,31 @@ app.get("/v1/issues", (c) => {
 });
 
 // X402 payment middleware - applied globally, routes are matched by config keys
-app.use(
-  paymentMiddleware(
+// Get specific newsletter - handles both subscription and per-issue payment
+app.get("/v1/issues/:id", async (c, next) => {
+  const id = c.req.param("id");
+  const newsletter = newsletters.get(id);
+
+  if (!newsletter) {
+    return c.json({ error: "Newsletter not found" }, 404);
+  }
+
+  // Check for subscription header (wallet address)
+  const subscriberWallet = c.req.header("X-SUBSCRIBER-WALLET");
+  
+  if (subscriberWallet) {
+    const status = checkSubscription(subscriberWallet);
+    if (status.active) {
+      // Valid subscription - decrement and serve
+      useSubscriptionIssue(subscriberWallet);
+      const remaining = checkSubscription(subscriberWallet).remaining || 0;
+      console.log(`[api] Subscriber ${subscriberWallet} accessed ${newsletter.id} (${remaining} remaining)`);
+      return serveNewsletter(c, newsletter, remaining);
+    }
+  }
+  
+  // No valid subscription - require X402 payment via middleware
+  return paymentMiddleware(
     {
       "GET /v1/issues/*": {
         accepts: {
@@ -292,23 +361,18 @@ app.use(
       },
     },
     x402Server
-  )
-);
+  )(c, async () => {
+    // Payment verified - serve the newsletter
+    console.log(`[api] Payment received for ${newsletter.id}`);
+    return serveNewsletter(c, newsletter);
+  });
+});
 
-// Get specific newsletter (X402 middleware handles payment verification above)
-app.get("/v1/issues/:id", async (c) => {
-  const id = c.req.param("id");
-  const newsletter = newsletters.get(id);
-
-  if (!newsletter) {
-    return c.json({ error: "Newsletter not found" }, 404);
-  }
-
-  // If we reach here, payment was verified by X402 middleware
-  console.log(`[api] Payment received for ${newsletter.id}`);
+// Helper to serve newsletter in agent-optimized format
+function serveNewsletter(c: any, newsletter: Newsletter, subscriptionRemaining?: number) {
   
   // Return agent-optimized format
-  const agentResponse = {
+  const agentResponse: Record<string, any> = {
     id: newsletter.id,
     name: newsletter.name,
     date: newsletter.date,
@@ -352,8 +416,15 @@ app.get("/v1/issues/:id", async (c) => {
     tokenCount: newsletter.tokenCount,
   };
   
+  // Add subscription info if applicable
+  if (subscriptionRemaining !== undefined) {
+    agentResponse.subscription = {
+      issuesRemaining: subscriptionRemaining,
+    };
+  }
+  
   return c.json(agentResponse);
-});
+}
 
 // Subscription info (free)
 app.get("/v1/subscribe", (c) => {
@@ -364,20 +435,97 @@ app.get("/v1/subscribe", (c) => {
         priceCents: DEFAULT_PRICING.perIssue,
         description: "Pay per newsletter",
       },
-      weekly: {
-        price: centsToPriceString(DEFAULT_PRICING.weekly),
-        priceCents: DEFAULT_PRICING.weekly,
-        description: "7 days of access",
-      },
-      monthly: {
-        price: centsToPriceString(DEFAULT_PRICING.monthly),
-        priceCents: DEFAULT_PRICING.monthly,
-        description: "30 days of access",
+      bulk_250: {
+        price: centsToPriceString(DEFAULT_PRICING.bulk250),
+        priceCents: DEFAULT_PRICING.bulk250,
+        issues: BULK_ISSUE_COUNT,
+        description: `Pay $${(DEFAULT_PRICING.bulk250 / 100).toFixed(2)} upfront for ${BULK_ISSUE_COUNT} issues. No per-request payments needed.`,
+        endpoint: "/v1/subscribe/bulk",
       },
     },
     currency: "USDC",
     network: NETWORK,
     chains: ["base"],
+    recommended: "bulk_250",
+  });
+});
+
+// Check subscription status (free)
+app.get("/v1/subscribe/status/:wallet", (c) => {
+  const wallet = c.req.param("wallet");
+  const status = checkSubscription(wallet);
+  
+  return c.json({
+    wallet: wallet.toLowerCase(),
+    subscribed: status.active,
+    issuesRemaining: status.remaining || 0,
+    tier: status.active ? "bulk_250" : null,
+  });
+});
+
+// X402 payment middleware for bulk subscription
+app.use(
+  "/v1/subscribe/bulk",
+  paymentMiddleware(
+    {
+      "POST /v1/subscribe/bulk": {
+        accepts: {
+          scheme: "exact",
+          price: centsToPriceString(DEFAULT_PRICING.bulk250),
+          network: NETWORK,
+          payTo: RECEIVER_ADDRESS,
+        },
+        description: `Morning Stew bulk subscription - ${BULK_ISSUE_COUNT} issues`,
+        mimeType: "application/json",
+      },
+    },
+    x402Server
+  )
+);
+
+// Purchase bulk subscription (X402 payment required)
+app.post("/v1/subscribe/bulk", async (c) => {
+  // Extract payer wallet from x402 payment header
+  // The payment was already verified by middleware
+  const paymentHeader = c.req.header("X-PAYMENT");
+  let payerWallet = "unknown";
+  
+  // Try to extract wallet from payment header (base64 JSON)
+  if (paymentHeader) {
+    try {
+      const decoded = JSON.parse(Buffer.from(paymentHeader, "base64").toString());
+      payerWallet = decoded.payload?.authorization?.from || decoded.from || "unknown";
+    } catch {
+      // Try to get from request body as fallback
+      const body = await c.req.json().catch(() => ({}));
+      payerWallet = body.wallet || "unknown";
+    }
+  }
+  
+  // Create subscription
+  const subscription: Subscription = {
+    id: `sub-${Date.now()}`,
+    walletAddress: payerWallet.toLowerCase(),
+    tier: "bulk_250",
+    chain: "base",
+    currency: "USDC",
+    createdAt: new Date().toISOString(),
+    issuesRemaining: BULK_ISSUE_COUNT,
+  };
+  
+  subscriptions.set(payerWallet.toLowerCase(), subscription);
+  
+  console.log(`[subscription] New bulk subscription: ${payerWallet} - ${BULK_ISSUE_COUNT} issues`);
+  
+  return c.json({
+    success: true,
+    subscription: {
+      id: subscription.id,
+      wallet: subscription.walletAddress,
+      issuesRemaining: subscription.issuesRemaining,
+      tier: subscription.tier,
+    },
+    message: `Subscribed! You have ${BULK_ISSUE_COUNT} issues available. Access /v1/issues/{id} without payment.`,
   });
 });
 

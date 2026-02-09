@@ -25,29 +25,28 @@ describe("NETWORKS", () => {
 describe("createSubscription", () => {
   it("creates weekly subscription with expiry", () => {
     const sub = createSubscription(
-      "agent-123",
+      "0xAgent123",
       "weekly",
       NETWORKS.BASE_MAINNET,
       "0xabc123"
     );
 
-    expect(sub.agentId).toBe("agent-123");
+    expect(sub.walletAddress).toBe("0xagent123"); // lowercase
     expect(sub.tier).toBe("weekly");
     expect(sub.chain).toBe("base");
     expect(sub.currency).toBe("USDC");
     expect(sub.expiresAt).toBeDefined();
   });
 
-  it("creates per_issue subscription without expiry", () => {
+  it("creates bulk_250 subscription with issuesRemaining", () => {
     const sub = createSubscription(
-      "agent-456",
-      "per_issue",
+      "0xAgent456",
+      "bulk_250",
       NETWORKS.BASE_SEPOLIA,
       "0xdef789"
     );
 
-    expect(sub.tier).toBe("per_issue");
-    expect(sub.expiresAt).toBeUndefined();
-    expect(sub.issuesPurchased).toEqual([]);
+    expect(sub.tier).toBe("bulk_250");
+    expect(sub.issuesRemaining).toBe(250);
   });
 });
