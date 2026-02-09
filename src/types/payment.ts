@@ -25,7 +25,7 @@ export type Pricing = z.infer<typeof PricingSchema>;
 
 // Default pricing in USDC cents
 export const DEFAULT_PRICING: Pricing = {
-  perIssue: 5, // $0.05
-  weekly: 25, // $0.25
+  perIssue: 15, // $0.15
+  weekly: 75, // $0.75
   monthly: 80, // $0.80
 };
