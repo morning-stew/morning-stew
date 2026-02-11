@@ -333,7 +333,7 @@ app.use(
   paymentMiddleware(
     RECEIVER_ADDRESS as `0x${string}`,
     {
-      "/v1/issues/:id": {
+      "/v1/issues/[id]": {
         price: centsToPriceString(DEFAULT_PRICING.perIssue),
         network: NETWORK,
         config: {
