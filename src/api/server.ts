@@ -1,10 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
-import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
-import { ExactEvmScheme } from "@x402/evm/exact/server";
-import { HTTPFacilitatorClient } from "@x402/core/server";
-import { facilitator as cdpFacilitator } from "@coinbase/x402";
+import { paymentMiddleware, Network } from "x402-hono";
 import cron from "node-cron";
 import type { Newsletter, Subscription } from "../types";
 import { DEFAULT_PRICING, BULK_ISSUE_COUNT } from "../types";
@@ -15,17 +12,16 @@ import { compileNewsletter } from "../compiler/compile";
  * Morning Stew API Server
  * 
  * X402 payment-gated newsletter API for AI agents.
+ * Payments on Solana via PayAI facilitator.
  */
 
 // Config from environment
-const RECEIVER_ADDRESS = process.env.RECEIVER_ADDRESS || "0x7873D7d9DABc0722c1e88815193c83B260058553";
+const RECEIVER_ADDRESS = process.env.RECEIVER_ADDRESS || "";
 const USE_TESTNET = process.env.USE_TESTNET !== "false";
-const NETWORK = USE_TESTNET ? NETWORKS.BASE_SEPOLIA : NETWORKS.BASE_MAINNET;
+const NETWORK = (USE_TESTNET ? NETWORKS.SOLANA_DEVNET : NETWORKS.SOLANA_MAINNET) as Network;
 
-// Facilitator: Use CDP for mainnet, x402.org for testnet
-const FACILITATOR_URL = USE_TESTNET 
-  ? "https://x402.org/facilitator" 
-  : "cdp"; // CDP facilitator for mainnet (built into @coinbase/x402)
+// PayAI facilitator — Solana-first, no API keys needed
+const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://facilitator.payai.network";
 
 // In-memory store (replace with Filecoin/IPFS in production)
 const newsletters = new Map<string, Newsletter>();
@@ -59,16 +55,6 @@ function useSubscriptionIssue(walletAddress: string): boolean {
   console.log(`[subscription] ${walletAddress} used 1 issue, ${sub.issuesRemaining} remaining`);
   return true;
 }
-
-// Initialize X402 facilitator client and resource server
-// For mainnet, use CDP's facilitator which handles auth automatically via env vars
-// Set CDP_API_KEY_ID and CDP_API_KEY_SECRET in environment
-const facilitatorClient = USE_TESTNET
-  ? new HTTPFacilitatorClient({ url: "https://x402.org/facilitator" })
-  : new HTTPFacilitatorClient(cdpFacilitator);
-
-const x402Server = new x402ResourceServer(facilitatorClient)
-  .register(NETWORK, new ExactEvmScheme());
 
 const app = new Hono();
 
@@ -181,7 +167,7 @@ app.get("/skill.md", (c) => {
   
   const markdown = `# Morning Stew
 
-> Daily AI agent newsletter. ${centsToPriceString(DEFAULT_PRICING.perIssue)} USDC per issue. Base mainnet.
+> Daily AI agent newsletter. ${centsToPriceString(DEFAULT_PRICING.perIssue)} USDC per issue. Solana.
 
 ## Quick Start (One-liner)
 
@@ -250,15 +236,16 @@ Check your status: \`GET /v1/subscribe/status/{wallet}\`
 
 - **ID**: \`${latestId}\`
 - **Name**: "${latestName}"
-- **Price**: ${centsToPriceString(DEFAULT_PRICING.perIssue)} USDC on Base
+- **Price**: ${centsToPriceString(DEFAULT_PRICING.perIssue)} USDC on Solana
 
 ## Payment
 
-- **Network**: Base mainnet (\`eip155:8453\`)
+- **Network**: Solana (\`${NETWORK}\`)
 - **Currency**: USDC
 - **Protocol**: [X402](https://x402.org) - HTTP-native micropayments
+- **Facilitator**: [PayAI](https://facilitator.payai.network)
 
-Your agent needs a funded wallet on Base with USDC. Use \`@x402/fetch\` or any x402-compatible client.
+Your agent needs a funded Solana wallet with USDC. Use any x402-compatible client.
 
 ---
 
@@ -322,9 +309,53 @@ app.get("/v1/issues", (c) => {
   });
 });
 
-// X402 payment middleware - applied globally, routes are matched by config keys
-// Get specific newsletter - handles both subscription and per-issue payment
-app.get("/v1/issues/:id", async (c, next) => {
+// Subscription check middleware — runs before payment middleware for issue routes
+app.use("/v1/issues/:id", async (c, next) => {
+  const subscriberWallet = c.req.header("X-SUBSCRIBER-WALLET");
+  if (subscriberWallet) {
+    const id = c.req.param("id");
+    const newsletter = newsletters.get(id);
+    if (newsletter) {
+      const status = checkSubscription(subscriberWallet);
+      if (status.active) {
+        useSubscriptionIssue(subscriberWallet);
+        const remaining = checkSubscription(subscriberWallet).remaining || 0;
+        console.log(`[api] Subscriber ${subscriberWallet} accessed ${newsletter.id} (${remaining} remaining)`);
+        return serveNewsletter(c, newsletter, remaining);
+      }
+    }
+  }
+  await next();
+});
+
+// X402 payment middleware — PayAI facilitator for Solana
+app.use(
+  paymentMiddleware(
+    RECEIVER_ADDRESS as `0x${string}`,
+    {
+      "/v1/issues/:id": {
+        price: centsToPriceString(DEFAULT_PRICING.perIssue),
+        network: NETWORK,
+        config: {
+          description: "Morning Stew newsletter issue",
+        },
+      },
+      "/v1/subscribe/bulk": {
+        price: centsToPriceString(DEFAULT_PRICING.bulk250),
+        network: NETWORK,
+        config: {
+          description: `Morning Stew bulk subscription - ${BULK_ISSUE_COUNT} issues`,
+        },
+      },
+    },
+    {
+      url: FACILITATOR_URL as `${string}://${string}`,
+    },
+  )
+);
+
+// Get specific newsletter (payment verified by middleware above)
+app.get("/v1/issues/:id", async (c) => {
   const id = c.req.param("id");
   const newsletter = newsletters.get(id);
 
@@ -332,40 +363,8 @@ app.get("/v1/issues/:id", async (c, next) => {
     return c.json({ error: "Newsletter not found" }, 404);
   }
 
-  // Check for subscription header (wallet address)
-  const subscriberWallet = c.req.header("X-SUBSCRIBER-WALLET");
-  
-  if (subscriberWallet) {
-    const status = checkSubscription(subscriberWallet);
-    if (status.active) {
-      // Valid subscription - decrement and serve
-      useSubscriptionIssue(subscriberWallet);
-      const remaining = checkSubscription(subscriberWallet).remaining || 0;
-      console.log(`[api] Subscriber ${subscriberWallet} accessed ${newsletter.id} (${remaining} remaining)`);
-      return serveNewsletter(c, newsletter, remaining);
-    }
-  }
-  
-  // No valid subscription - require X402 payment via middleware
-  return paymentMiddleware(
-    {
-      "GET /v1/issues/*": {
-        accepts: {
-          scheme: "exact",
-          price: centsToPriceString(DEFAULT_PRICING.perIssue),
-          network: NETWORK,
-          payTo: RECEIVER_ADDRESS,
-        },
-        description: "Morning Stew newsletter issue",
-        mimeType: "application/json",
-      },
-    },
-    x402Server
-  )(c, async () => {
-    // Payment verified - serve the newsletter
-    console.log(`[api] Payment received for ${newsletter.id}`);
-    return serveNewsletter(c, newsletter);
-  });
+  console.log(`[api] Payment received for ${newsletter.id}`);
+  return serveNewsletter(c, newsletter);
 });
 
 // Helper to serve newsletter in agent-optimized format
@@ -445,7 +444,7 @@ app.get("/v1/subscribe", (c) => {
     },
     currency: "USDC",
     network: NETWORK,
-    chains: ["base"],
+    chains: ["solana"],
     recommended: "bulk_250",
   });
 });
@@ -463,27 +462,7 @@ app.get("/v1/subscribe/status/:wallet", (c) => {
   });
 });
 
-// X402 payment middleware for bulk subscription
-app.use(
-  "/v1/subscribe/bulk",
-  paymentMiddleware(
-    {
-      "POST /v1/subscribe/bulk": {
-        accepts: {
-          scheme: "exact",
-          price: centsToPriceString(DEFAULT_PRICING.bulk250),
-          network: NETWORK,
-          payTo: RECEIVER_ADDRESS,
-        },
-        description: `Morning Stew bulk subscription - ${BULK_ISSUE_COUNT} issues`,
-        mimeType: "application/json",
-      },
-    },
-    x402Server
-  )
-);
-
-// Purchase bulk subscription (X402 payment required)
+// Purchase bulk subscription (X402 payment verified by middleware above)
 app.post("/v1/subscribe/bulk", async (c) => {
   // Extract payer wallet from x402 payment header
   // The payment was already verified by middleware
@@ -507,7 +486,7 @@ app.post("/v1/subscribe/bulk", async (c) => {
     id: `sub-${Date.now()}`,
     walletAddress: payerWallet.toLowerCase(),
     tier: "bulk_250",
-    chain: "base",
+    chain: "solana",
     currency: "USDC",
     createdAt: new Date().toISOString(),
     issuesRemaining: BULK_ISSUE_COUNT,
@@ -649,7 +628,7 @@ console.log(`
    URL:        http://localhost:${port}
    Network:    ${NETWORK}
    Receiver:   ${RECEIVER_ADDRESS}
-   Facilitator: ${FACILITATOR_URL}
+   Facilitator: ${FACILITATOR_URL} (PayAI)
    Cron:       ${ENABLE_CRON ? CRON_SCHEDULE + " UTC (6 AM PT)" : "DISABLED"}
 
 Endpoints:

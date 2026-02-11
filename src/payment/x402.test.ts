@@ -11,42 +11,38 @@ describe("centsToPriceString", () => {
 });
 
 describe("NETWORKS", () => {
-  it("has correct CAIP-2 format for Base", () => {
-    expect(NETWORKS.BASE_MAINNET).toBe("eip155:8453");
-    expect(NETWORKS.BASE_SEPOLIA).toBe("eip155:84532");
-  });
-
-  it("has correct format for Solana", () => {
-    expect(NETWORKS.SOLANA_MAINNET).toMatch(/^solana:/);
-    expect(NETWORKS.SOLANA_DEVNET).toMatch(/^solana:/);
+  it("has correct PayAI network identifiers for Solana", () => {
+    expect(NETWORKS.SOLANA_MAINNET).toBe("solana");
+    expect(NETWORKS.SOLANA_DEVNET).toBe("solana-devnet");
   });
 });
 
 describe("createSubscription", () => {
   it("creates weekly subscription with expiry", () => {
     const sub = createSubscription(
-      "0xAgent123",
+      "Agent123PublicKey",
       "weekly",
-      NETWORKS.BASE_MAINNET,
-      "0xabc123"
+      NETWORKS.SOLANA_MAINNET,
+      "txhash123abc"
     );
 
-    expect(sub.walletAddress).toBe("0xagent123"); // lowercase
+    expect(sub.walletAddress).toBe("agent123publickey"); // lowercase
     expect(sub.tier).toBe("weekly");
-    expect(sub.chain).toBe("base");
+    expect(sub.chain).toBe("solana");
     expect(sub.currency).toBe("USDC");
     expect(sub.expiresAt).toBeDefined();
   });
 
   it("creates bulk_250 subscription with issuesRemaining", () => {
     const sub = createSubscription(
-      "0xAgent456",
+      "Agent456PublicKey",
       "bulk_250",
-      NETWORKS.BASE_SEPOLIA,
-      "0xdef789"
+      NETWORKS.SOLANA_DEVNET,
+      "txhash789def"
     );
 
     expect(sub.tier).toBe("bulk_250");
+    expect(sub.chain).toBe("solana");
     expect(sub.issuesRemaining).toBe(250);
   });
 });

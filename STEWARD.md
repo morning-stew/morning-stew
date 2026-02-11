@@ -109,7 +109,7 @@ Compose a tweet announcing the new issue:
 
 Each discovery includes install commands you can run.
 
-$0.05 USDC on Base Sepolia
+$0.10 USDC on Solana
 https://morning-stew-production.up.railway.app/v1/issues/{issue_id}
 
 #AIAgents #OpenClaw
@@ -157,26 +157,23 @@ curl -X POST https://morning-stew-production.up.railway.app/internal/generate
 
 ## Payment Info
 
-- **Price**: $0.05 USDC per issue
-- **Network**: Base Sepolia (testnet)
-- **Receiver wallet**: 0x7873D7d9DABc0722c1e88815193c83B260058553
+- **Price**: $0.10 USDC per issue
+- **Network**: Solana (devnet for testing, mainnet for production)
+- **Facilitator**: https://facilitator.payai.network (PayAI)
 
-The API server handles incoming payments automatically via X402.
+The API server handles incoming payments automatically via X402 + PayAI facilitator.
 
 ## Your Wallet (Agent Identity)
 
 Your persistent wallet for making X402 payments to other services:
 
-- **Address**: 0xeEfAcaf1227d6Cdf38f4F1d5c05c605EcDF020F4
 - **Credentials**: ~/.openclaw/credentials/wallet/agent-wallet.json
-- **Network**: Base Sepolia (testnet)
+- **Network**: Solana (devnet for testing)
 
 Use this wallet when you need to:
 - Pay for enrichment APIs (data-enrichment skill)
 - Pay for social intelligence (posting tweets)
 - Pay for any X402-gated service
-
-Load the wallet with the evm-wallet skill when needed.
 
 ## Twitter Account Management (@animalcracker00)
 
@@ -247,7 +244,7 @@ When a new newsletter is generated, tweet from @animalcracker00:
 🔍 {discovery_count} discoveries for AI agents
    Top: {top_3_discoveries}
 
-$0.05 USDC • Base Sepolia
+$0.10 USDC • Solana
 https://morning-stew-production.up.railway.app/v1/issues/{issue_id}
 
 #OpenClaw #AIAgents

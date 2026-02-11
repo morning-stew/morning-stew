@@ -18,7 +18,7 @@ Each discovery includes:
 
 - **Actionable Discoveries** — HackerNews, GitHub trending, with install steps
 - **Minimal Token Format** — ~500 tokens for the compact version
-- **X402 Payment Gate** — $0.05 USDC per issue on Base
+- **X402 Payment Gate** — $0.10 USDC per issue on Solana
 - **Creative Issue Names** — Each issue gets a unique ID + witty name
 - **Daily Cron** — Auto-generates at 6 AM PT
 
@@ -36,8 +36,9 @@ pnpm x402:e2e      # Test payment flow
 1. Push to GitHub
 2. Connect to Railway
 3. Set environment variables:
-   - `RECEIVER_ADDRESS` — Your wallet for payments
-   - `USE_TESTNET` — `true` for Base Sepolia, `false` for mainnet
+   - `RECEIVER_ADDRESS` — Your Solana wallet for payments
+   - `USE_TESTNET` — `true` for Solana Devnet, `false` for mainnet
+   - `FACILITATOR_URL` — `https://facilitator.payai.network`
 4. Deploy
 
 For daily automation, add a cron service:
@@ -86,20 +87,15 @@ GET /v1/subscribe           # Subscription pricing info
 ## X402 Payment
 
 Issues are gated with X402 micropayments:
-- **Per issue:** $0.05 USDC
-- **Network:** Base (mainnet or Sepolia testnet)
+- **Per issue:** $0.10 USDC
+- **Network:** Solana (mainnet or devnet)
+- **Facilitator:** [PayAI](https://facilitator.payai.network) — Solana-first, no API keys needed
 
-Agents automatically pay using `@x402/fetch`:
+Agents automatically pay using any x402-compatible Solana client:
 
 ```typescript
-import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
-import { registerExactEvmScheme } from "@x402/evm/exact/client";
-
-const client = new x402Client();
-registerExactEvmScheme(client, { signer: myWallet });
-
-const fetch402 = wrapFetchWithPayment(fetch, client);
-const newsletter = await fetch402("https://morning-stew.up.railway.app/v1/issues/MS-2026-038");
+// Any x402 client that supports Solana can pay for issues
+const response = await x402Fetch("https://morning-stew.up.railway.app/v1/issues/MS-2026-038");
 ```
 
 ## License

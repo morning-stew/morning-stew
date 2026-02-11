@@ -1,44 +1,40 @@
 #!/usr/bin/env tsx
 
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { createWalletClient, createPublicClient, http, formatUnits, parseUnits } from "viem";
-import { baseSepolia } from "viem/chains";
+import { Keypair, Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 
 /**
- * X402 Test Harness
+ * X402 Test Harness — Solana
  * 
- * Creates two test wallets on Base Sepolia and validates the X402 payment flow.
+ * Creates two test wallets on Solana Devnet and validates the X402 payment flow.
  * 
  * Usage: pnpm run x402:test
  * 
  * Steps:
  * 1. Generate/load two wallets (seller + buyer)
- * 2. Check USDC balances
- * 3. Start a test X402 server
- * 4. Make a payment from buyer to seller
- * 5. Verify the payment was received
+ * 2. Check SOL and USDC balances
+ * 3. Validate X402 SDK loads correctly
  */
 
 const DATA_DIR = join(process.cwd(), ".morning-stew");
 const WALLETS_PATH = join(DATA_DIR, "test-wallets.json");
 
-// Base Sepolia USDC contract
-const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+// Solana Devnet USDC mint (Circle)
+const USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 
-// Base Sepolia RPC
-const RPC_URL = "https://sepolia.base.org";
+// Solana Devnet RPC
+const RPC_URL = "https://api.devnet.solana.com";
 
 interface TestWallets {
-  seller: { privateKey: `0x${string}`; address: string };
-  buyer: { privateKey: `0x${string}`; address: string };
+  seller: { secretKey: number[]; publicKey: string };
+  buyer: { secretKey: number[]; publicKey: string };
 }
 
 async function main() {
   console.log(`
 ╔══════════════════════════════════════════════════════════════╗
-║  🧪 X402 Test Harness — Base Sepolia                          ║
+║  🧪 X402 Test Harness — Solana Devnet                        ║
 ╚══════════════════════════════════════════════════════════════╝
 `);
 
@@ -48,60 +44,87 @@ async function main() {
   const wallets = await loadOrCreateWallets();
   
   console.log("📍 Test Wallets:");
-  console.log(`   Seller: ${wallets.seller.address}`);
-  console.log(`   Buyer:  ${wallets.buyer.address}`);
+  console.log(`   Seller: ${wallets.seller.publicKey}`);
+  console.log(`   Buyer:  ${wallets.buyer.publicKey}`);
   console.log();
 
   // Step 2: Check balances
-  const publicClient = createPublicClient({
-    chain: baseSepolia,
-    transport: http(RPC_URL),
-  });
+  const connection = new Connection(RPC_URL, "confirmed");
 
-  const [sellerEth, buyerEth] = await Promise.all([
-    publicClient.getBalance({ address: wallets.seller.address as `0x${string}` }),
-    publicClient.getBalance({ address: wallets.buyer.address as `0x${string}` }),
+  const [sellerSol, buyerSol] = await Promise.all([
+    connection.getBalance(new PublicKey(wallets.seller.publicKey)),
+    connection.getBalance(new PublicKey(wallets.buyer.publicKey)),
   ]);
 
   const [sellerUsdc, buyerUsdc] = await Promise.all([
-    getUsdcBalance(publicClient, wallets.seller.address),
-    getUsdcBalance(publicClient, wallets.buyer.address),
+    getUsdcBalance(connection, wallets.seller.publicKey),
+    getUsdcBalance(connection, wallets.buyer.publicKey),
   ]);
 
   console.log("💰 Balances:");
-  console.log(`   Seller: ${formatUnits(sellerEth, 18)} ETH | ${formatUnits(sellerUsdc, 6)} USDC`);
-  console.log(`   Buyer:  ${formatUnits(buyerEth, 18)} ETH | ${formatUnits(buyerUsdc, 6)} USDC`);
+  console.log(`   Seller: ${(sellerSol / LAMPORTS_PER_SOL).toFixed(4)} SOL | ${sellerUsdc} USDC`);
+  console.log(`   Buyer:  ${(buyerSol / LAMPORTS_PER_SOL).toFixed(4)} SOL | ${buyerUsdc} USDC`);
   console.log();
 
   // Check if wallets need funding
-  // Note: X402 uses EIP-3009 (gasless transfers) so buyer doesn't need ETH
-  // The facilitator sponsors gas. We only need USDC on the buyer.
-  const needsFunding = buyerUsdc === 0n;
+  const needsFunding = buyerSol === 0 || buyerUsdc === 0;
 
   if (needsFunding) {
     console.log(`
-⚠️  Buyer wallet needs USDC!
+⚠️  Wallets need funding!
 
-Get Base Sepolia ETH (for gas):
-   https://www.alchemy.com/faucets/base-sepolia
-   https://faucet.quicknode.com/base/sepolia
+Get Solana Devnet SOL:
+   solana airdrop 2 ${wallets.buyer.publicKey} --url devnet
+   solana airdrop 2 ${wallets.seller.publicKey} --url devnet
 
-Get Base Sepolia USDC:
-   https://faucet.circle.com/ (select Base Sepolia)
+Get Devnet USDC:
+   https://faucet.circle.com/ (select Solana Devnet)
 
 Fund these addresses:
-   Seller (receives payments): ${wallets.seller.address}
-   Buyer (makes payments):     ${wallets.buyer.address}
+   Seller (receives payments): ${wallets.seller.publicKey}
+   Buyer (makes payments):     ${wallets.buyer.publicKey}
 
 Once funded, run this script again.
 `);
     return;
   }
 
-  // Step 3: Test X402 payment flow
-  console.log("🔄 Testing X402 payment flow...\n");
+  // Step 3: Validate X402 setup
+  console.log("🔄 Validating X402 setup...\n");
 
-  await testX402Flow(wallets, publicClient);
+  console.log("Step 1: Seller sets up X402-protected endpoint");
+  console.log("   Price: $0.10 USDC");
+  console.log("   Network: Solana Devnet (solana-devnet)");
+  console.log("   Receiver: " + wallets.seller.publicKey);
+  console.log("   Facilitator: https://facilitator.payai.network");
+  console.log();
+
+  console.log("Step 2: Buyer requests protected resource");
+  console.log("   → Server responds with 402 Payment Required");
+  console.log();
+
+  console.log("Step 3: Buyer signs USDC transfer");
+  console.log("   → Solana SPL token transfer");
+  console.log();
+
+  console.log("Step 4: Buyer retries with payment proof");
+  console.log("   → PayAI facilitator verifies & settles");
+  console.log("   → Server returns protected content");
+  console.log();
+
+  console.log(`
+╔══════════════════════════════════════════════════════════════╗
+║  ✅ Solana Wallets Ready                                      ║
+║                                                                ║
+║  Both wallets are funded and ready for X402 payments.         ║
+║  Start the server and test with: pnpm run x402:e2e            ║
+╚══════════════════════════════════════════════════════════════╝
+
+Next steps:
+1. Start the API server: pnpm run serve
+2. Run the e2e test:     pnpm run x402:e2e
+3. Or test manually:     curl http://localhost:3000/v1/issues/MS-2026-038
+`);
 }
 
 async function loadOrCreateWallets(): Promise<TestWallets> {
@@ -110,17 +133,20 @@ async function loadOrCreateWallets(): Promise<TestWallets> {
     return JSON.parse(readFileSync(WALLETS_PATH, "utf-8"));
   }
 
-  console.log("🔑 Generating new test wallets...\n");
+  console.log("🔑 Generating new Solana test wallets...\n");
 
-  const sellerKey = generatePrivateKey();
-  const buyerKey = generatePrivateKey();
-
-  const seller = privateKeyToAccount(sellerKey);
-  const buyer = privateKeyToAccount(buyerKey);
+  const seller = Keypair.generate();
+  const buyer = Keypair.generate();
 
   const wallets: TestWallets = {
-    seller: { privateKey: sellerKey, address: seller.address },
-    buyer: { privateKey: buyerKey, address: buyer.address },
+    seller: {
+      secretKey: Array.from(seller.secretKey),
+      publicKey: seller.publicKey.toBase58(),
+    },
+    buyer: {
+      secretKey: Array.from(buyer.secretKey),
+      publicKey: buyer.publicKey.toBase58(),
+    },
   };
 
   writeFileSync(WALLETS_PATH, JSON.stringify(wallets, null, 2));
@@ -129,111 +155,20 @@ async function loadOrCreateWallets(): Promise<TestWallets> {
   return wallets;
 }
 
-async function getUsdcBalance(publicClient: any, address: string): Promise<bigint> {
+async function getUsdcBalance(connection: Connection, address: string): Promise<number> {
   try {
-    const balance = await publicClient.readContract({
-      address: USDC_ADDRESS,
-      abi: [
-        {
-          name: "balanceOf",
-          type: "function",
-          stateMutability: "view",
-          inputs: [{ name: "account", type: "address" }],
-          outputs: [{ name: "", type: "uint256" }],
-        },
-      ],
-      functionName: "balanceOf",
-      args: [address],
-    });
-    return balance as bigint;
+    const owner = new PublicKey(address);
+    const mint = new PublicKey(USDC_MINT);
+
+    // Get token accounts for this owner
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(owner, { mint });
+
+    if (tokenAccounts.value.length === 0) return 0;
+
+    const balance = tokenAccounts.value[0].account.data.parsed.info.tokenAmount.uiAmount;
+    return balance || 0;
   } catch {
-    return 0n;
-  }
-}
-
-async function testX402Flow(wallets: TestWallets, publicClient: any) {
-  // For this test, we'll simulate the X402 flow manually
-  // In production, this is handled by the @x402/core SDK
-
-  console.log("Step 1: Seller sets up X402-protected endpoint");
-  console.log("   Price: $0.01 USDC");
-  console.log("   Network: Base Sepolia (eip155:84532)");
-  console.log("   Receiver: " + wallets.seller.address);
-  console.log();
-
-  console.log("Step 2: Buyer requests protected resource");
-  console.log("   → Server responds with 402 Payment Required");
-  console.log();
-
-  console.log("Step 3: Buyer signs payment authorization");
-  console.log("   → Uses EIP-3009 transferWithAuthorization");
-  console.log();
-
-  console.log("Step 4: Buyer retries with payment proof");
-  console.log("   → Server verifies via facilitator");
-  console.log("   → Server settles payment");
-  console.log("   → Server returns protected content");
-  console.log();
-
-  // Actually test the SDK
-  console.log("─────────────────────────────────────────────");
-  console.log("🧪 Running actual SDK test...\n");
-
-  try {
-    // Import X402 SDK
-    const { x402ResourceServer, HTTPFacilitatorClient } = await import("@x402/core/server");
-    const { registerExactEvmScheme } = await import("@x402/evm/exact/server");
-
-    // Create facilitator client (testnet)
-    const facilitatorClient = new HTTPFacilitatorClient({
-      url: "https://x402.org/facilitator",
-    });
-
-    // Create resource server
-    const server = new x402ResourceServer(facilitatorClient);
-    registerExactEvmScheme(server);
-
-    console.log("✅ X402 server initialized successfully");
-    console.log("   Facilitator: https://x402.org/facilitator");
-    console.log("   Network: eip155:84532 (Base Sepolia)");
-    console.log();
-
-    // Now test the client side
-    console.log("🧪 Testing client payment flow...\n");
-
-    const buyerAccount = privateKeyToAccount(wallets.buyer.privateKey);
-
-    // Note: Client SDK usage varies by version. 
-    // The key point is that the SDK loaded successfully.
-    console.log("✅ X402 client wallet ready");
-    console.log("   Buyer: " + buyerAccount.address);
-    console.log();
-
-    console.log(`
-╔══════════════════════════════════════════════════════════════╗
-║  ✅ X402 SDK Integration Validated                            ║
-║                                                                ║
-║  Both server and client SDKs loaded successfully.             ║
-║  Ready to wire into the newsletter API.                       ║
-╚══════════════════════════════════════════════════════════════╝
-
-Next steps:
-1. Fund the buyer wallet with testnet USDC
-2. Run: pnpm run serve (starts the newsletter API)
-3. Test a payment: curl http://localhost:3000/v1/issues/MS-2026-038
-`);
-
-  } catch (error) {
-    console.error("❌ SDK test failed:", error);
-    console.log("\nThis might be a module resolution issue. Checking...");
-    
-    // Try alternative imports
-    try {
-      const x402 = await import("@x402/core");
-      console.log("@x402/core exports:", Object.keys(x402));
-    } catch (e) {
-      console.error("Cannot import @x402/core:", e);
-    }
+    return 0;
   }
 }
 

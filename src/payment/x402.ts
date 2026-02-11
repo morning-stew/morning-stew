@@ -2,21 +2,18 @@ import type { Subscription, SubscriptionTier, Pricing } from "../types";
 import { DEFAULT_PRICING } from "../types";
 
 /**
- * X402 payment integration for Base USDC.
+ * X402 payment integration for Solana USDC.
  * 
  * X402 is an open protocol for HTTP 402 Payment Required responses.
- * Uses CAIP-2 network identifiers: eip155:8453 (Base mainnet), eip155:84532 (Base Sepolia)
+ * Uses PayAI facilitator (https://facilitator.payai.network) for Solana payments.
  * 
- * Docs: https://docs.x402.org
+ * Docs: https://docs.payai.network
  */
 
-// CAIP-2 Network identifiers
+// Network identifiers (PayAI facilitator format)
 export const NETWORKS = {
-  BASE_MAINNET: "eip155:8453",
-  BASE_SEPOLIA: "eip155:84532",
-  // Future chains
-  SOLANA_MAINNET: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-  SOLANA_DEVNET: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+  SOLANA_MAINNET: "solana",
+  SOLANA_DEVNET: "solana-devnet",
 } as const;
 
 export type Network = (typeof NETWORKS)[keyof typeof NETWORKS];
@@ -29,20 +26,19 @@ export interface X402Config {
 }
 
 /**
- * Default config for testnet development
+ * Default config for Solana devnet development
  */
 export const TESTNET_CONFIG: Partial<X402Config> = {
-  network: NETWORKS.BASE_SEPOLIA,
-  facilitatorUrl: "https://x402.org/facilitator",
+  network: NETWORKS.SOLANA_DEVNET,
+  facilitatorUrl: "https://facilitator.payai.network",
 };
 
 /**
- * Default config for Base mainnet production
+ * Default config for Solana mainnet production
  */
 export const MAINNET_CONFIG: Partial<X402Config> = {
-  network: NETWORKS.BASE_MAINNET,
-  // Use a production facilitator from https://x402.org/ecosystem
-  facilitatorUrl: "https://x402.org/facilitator", // TODO: Use production facilitator
+  network: NETWORKS.SOLANA_MAINNET,
+  facilitatorUrl: "https://facilitator.payai.network",
 };
 
 /**
@@ -104,8 +100,6 @@ export function createSubscription(
 
   // Map network to chain name
   const chainMap: Record<Network, "base" | "monad" | "solana"> = {
-    [NETWORKS.BASE_MAINNET]: "base",
-    [NETWORKS.BASE_SEPOLIA]: "base",
     [NETWORKS.SOLANA_MAINNET]: "solana",
     [NETWORKS.SOLANA_DEVNET]: "solana",
   };
@@ -114,7 +108,7 @@ export function createSubscription(
     id: `sub_${transactionHash.slice(0, 16)}`,
     walletAddress: agentId.toLowerCase(),
     tier,
-    chain: chainMap[network] || "base",
+    chain: chainMap[network] || "solana",
     currency: "USDC",
     createdAt: now.toISOString(),
     expiresAt,
