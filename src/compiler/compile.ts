@@ -5,6 +5,7 @@ import {
   scrapeDiscoveries,
   scrapeGitHubTrending,
   scrapeTwitterFeed,
+  scrapeEditorDMs,
 } from "../scrapers";
 import { curateDiscoveries, type CuratedDiscovery } from "../curation";
 
@@ -14,6 +15,7 @@ export interface CompileOptions {
   skipGitHubTrending?: boolean;
   skipGitHubReleases?: boolean;
   skipTwitterFeed?: boolean;
+  skipEditorDMs?: boolean;   // Skip checking @aboozle DMs
   skipCuration?: boolean;    // Skip quality filtering (for testing)
   headless?: boolean;
 }
@@ -44,7 +46,7 @@ export async function compileNewsletter(
   console.log(`[compile] Quality-first curation enabled`);
 
   // Scrape all sources in parallel
-  const [hnDiscoveries, ghDiscoveries, twitterDiscoveries, frameworkUpdates] = await Promise.all([
+  const [hnDiscoveries, ghDiscoveries, twitterDiscoveries, editorPicks, frameworkUpdates] = await Promise.all([
     options.skipDiscoveries 
       ? [] 
       : scrapeDiscoveries({ maxPerCategory: 3, minPoints: 20, hoursAgo: 48 }),
@@ -54,15 +56,19 @@ export async function compileNewsletter(
     options.skipTwitterFeed
       ? []
       : scrapeTwitterFeed({ maxPerAccount: 5, hoursAgo: 48, minRelevanceScore: 25, headless: options.headless ?? true }),
+    options.skipEditorDMs
+      ? []
+      : scrapeEditorDMs({ headless: options.headless ?? true }),
     options.skipGitHubReleases 
       ? [] 
       : scrapeGitHubReleases({ since: new Date(Date.now() - 48 * 60 * 60 * 1000) }),
   ]);
 
-  console.log(`[compile] Raw candidates: HN=${hnDiscoveries.length}, GH=${ghDiscoveries.length}, Twitter=${twitterDiscoveries.length}`);
+  console.log(`[compile] Raw candidates: HN=${hnDiscoveries.length}, GH=${ghDiscoveries.length}, Twitter=${twitterDiscoveries.length}, Editor=${editorPicks.length}`);
 
   // Combine and dedupe discoveries
-  const allDiscoveries = dedupeDiscoveries([...hnDiscoveries, ...ghDiscoveries, ...twitterDiscoveries]);
+  // Editor picks go first (highest priority), then other sources
+  const allDiscoveries = dedupeDiscoveries([...editorPicks, ...hnDiscoveries, ...ghDiscoveries, ...twitterDiscoveries]);
   console.log(`[compile] After dedupe: ${allDiscoveries.length} unique discoveries`);
 
   // Run through quality curation

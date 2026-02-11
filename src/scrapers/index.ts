@@ -10,3 +10,6 @@ export { scrapeGitHubTrending } from "./github-trending";
 
 // Curated Twitter feed (primary source)
 export { scrapeTwitterFeed, PRIORITY_ACCOUNTS, RELEVANCE_KEYWORDS } from "./twitter-feed";
+
+// Editor DMs - suggestions from @aboozle
+export { scrapeEditorDMs, EDITOR_HANDLE } from "./twitter-dms";
