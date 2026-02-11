@@ -3,6 +3,8 @@ import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { paymentMiddleware, Network } from "x402-hono";
 import cron from "node-cron";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { join } from "path";
 import type { Newsletter, Subscription } from "../types";
 import { DEFAULT_PRICING, BULK_ISSUE_COUNT } from "../types";
 import { NETWORKS, centsToPriceString } from "../payment/x402";
@@ -23,11 +25,106 @@ const NETWORK = (USE_TESTNET ? NETWORKS.SOLANA_DEVNET : NETWORKS.SOLANA_MAINNET)
 // PayAI facilitator — Solana-first, no API keys needed
 const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://facilitator.payai.network";
 
-// In-memory store (replace with Filecoin/IPFS in production)
-const newsletters = new Map<string, Newsletter>();
+// ============================================================================
+// Newsletter persistence — file-based store (survives process restarts)
+// ============================================================================
+
+const DATA_DIR = join(process.cwd(), ".morning-stew");
+const ISSUES_DIR = join(DATA_DIR, "issues");
+
+function ensureDataDirs() {
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  if (!existsSync(ISSUES_DIR)) mkdirSync(ISSUES_DIR, { recursive: true });
+}
+
+function saveNewsletterToDisk(newsletter: Newsletter) {
+  ensureDataDirs();
+  const filePath = join(ISSUES_DIR, `${newsletter.id}.json`);
+  writeFileSync(filePath, JSON.stringify(newsletter, null, 2));
+  console.log(`[store] Saved to disk: ${newsletter.id}`);
+}
+
+function loadNewslettersFromDisk(): Map<string, Newsletter> {
+  ensureDataDirs();
+  const map = new Map<string, Newsletter>();
+  try {
+    const files = readdirSync(ISSUES_DIR).filter(f => f.endsWith(".json"));
+    for (const file of files) {
+      try {
+        const content = readFileSync(join(ISSUES_DIR, file), "utf-8");
+        const newsletter = JSON.parse(content) as Newsletter;
+        map.set(newsletter.id, newsletter);
+      } catch (e) {
+        console.error(`[store] Failed to load ${file}:`, e);
+      }
+    }
+    if (map.size > 0) console.log(`[store] Loaded ${map.size} newsletter(s) from disk`);
+  } catch {
+    console.log(`[store] No existing newsletters on disk`);
+  }
+  return map;
+}
+
+// Load persisted newsletters on startup
+const newsletters = loadNewslettersFromDisk();
 
 // Subscription store: wallet address (lowercase) -> subscription
 const subscriptions = new Map<string, Subscription>();
+
+// ============================================================================
+// Freshness & auto-generation logic
+// ============================================================================
+
+/** Get today's date string in Pacific Time (YYYY-MM-DD) */
+function todayPT(): string {
+  const now = new Date();
+  return now.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }); // en-CA gives YYYY-MM-DD
+}
+
+/** Get the latest newsletter by date */
+function getLatestNewsletter(): Newsletter | null {
+  const issues = Array.from(newsletters.values()).sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+  return issues[0] || null;
+}
+
+/** Check if we already have a newsletter for today (PT) */
+function hasNewsletterForToday(): boolean {
+  const today = todayPT();
+  return Array.from(newsletters.values()).some(n => n.date === today);
+}
+
+/** Lock to prevent concurrent generation */
+let isGenerating = false;
+
+/**
+ * Get the latest newsletter, auto-generating if:
+ * - No newsletters exist at all (first boot / empty store)
+ * - Latest newsletter is stale (no issue for today yet)
+ */
+async function getOrGenerateLatest(): Promise<Newsletter | null> {
+  const latest = getLatestNewsletter();
+
+  // If we have today's newsletter, return it
+  if (latest && hasNewsletterForToday()) return latest;
+
+  // If already generating, return whatever we have (even if stale)
+  if (isGenerating) {
+    console.log(`[auto-gen] Generation already in progress, serving latest available`);
+    return latest;
+  }
+
+  // Generate a new one
+  isGenerating = true;
+  try {
+    console.log(`[auto-gen] No fresh newsletter for ${todayPT()}, generating...`);
+    const newsletter = await generateAndPublish();
+    return newsletter || latest; // fall back to stale if generation fails
+  } finally {
+    isGenerating = false;
+  }
+}
 
 /**
  * Check if a wallet has an active subscription with remaining issues
@@ -257,16 +354,18 @@ Your agent needs a funded Solana wallet with USDC. Use any x402-compatible clien
 });
 
 // Get latest newsletter preview (free)
-app.get("/v1/latest", (c) => {
-  const issues = Array.from(newsletters.values()).sort(
-    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-  );
+app.get("/v1/latest", async (c) => {
+  let latest = getLatestNewsletter();
 
-  if (issues.length === 0) {
-    return c.json({ error: "No newsletters yet" }, 404);
+  // If no newsletters, try to generate one
+  if (!latest) {
+    console.log(`[api] /v1/latest — no newsletters, triggering generation`);
+    latest = await getOrGenerateLatest();
   }
 
-  const latest = issues[0];
+  if (!latest) {
+    return c.json({ error: "No newsletters yet and generation failed" }, 404);
+  }
 
   return c.json({
     id: latest.id,
@@ -357,10 +456,27 @@ app.use(
 // Get specific newsletter (payment verified by middleware above)
 app.get("/v1/issues/:id", async (c) => {
   const id = c.req.param("id");
-  const newsletter = newsletters.get(id);
+  let newsletter = newsletters.get(id);
 
+  // Failsafe: if no newsletter found, try to serve the latest (or generate one)
   if (!newsletter) {
-    return c.json({ error: "Newsletter not found" }, 404);
+    // If there are no newsletters at all, auto-generate for the paying customer
+    if (newsletters.size === 0) {
+      console.log(`[api] No newsletters available — auto-generating for paying customer`);
+      newsletter = await getOrGenerateLatest() || undefined;
+    } else {
+      // They requested a specific ID that doesn't exist, but we have others.
+      // Try to give them the latest fresh one instead of a hard 404.
+      const latest = await getOrGenerateLatest();
+      if (latest) {
+        console.log(`[api] Issue ${id} not found, serving latest: ${latest.id}`);
+        newsletter = latest;
+      }
+    }
+
+    if (!newsletter) {
+      return c.json({ error: "Newsletter not found and generation failed" }, 500);
+    }
   }
 
   console.log(`[api] Payment received for ${newsletter.id}`);
@@ -512,6 +628,7 @@ app.post("/v1/subscribe/bulk", async (c) => {
 app.post("/internal/newsletters", async (c) => {
   const newsletter = await c.req.json<Newsletter>();
   newsletters.set(newsletter.id, newsletter);
+  saveNewsletterToDisk(newsletter);
   console.log(`[api] Added newsletter: ${newsletter.id} - "${newsletter.name}"`);
   return c.json({ success: true, id: newsletter.id });
 });
@@ -529,21 +646,25 @@ app.get("/internal/newsletters", (c) => {
 // ============================================================================
 
 async function generateAndPublish(): Promise<Newsletter | null> {
-  console.log(`\n[cron] 🍵 Starting daily newsletter generation at ${new Date().toISOString()}`);
+  console.log(`\n[gen] 🍵 Starting newsletter generation at ${new Date().toISOString()}`);
   
   try {
     const newsletter = await compileNewsletter({
       headless: true,
     });
     
+    // Persist in-memory and to disk
     newsletters.set(newsletter.id, newsletter);
-    console.log(`[cron] ✅ Published: ${newsletter.id} - "${newsletter.name}"`);
-    console.log(`[cron]    Discoveries: ${newsletter.discoveries.length}`);
-    console.log(`[cron]    Tokens: ${newsletter.tokenCount}`);
+    saveNewsletterToDisk(newsletter);
+    
+    console.log(`[gen] ✅ Published: ${newsletter.id} - "${newsletter.name}"`);
+    console.log(`[gen]    Discoveries: ${newsletter.discoveries.length}`);
+    console.log(`[gen]    Tokens: ${newsletter.tokenCount}`);
+    console.log(`[gen]    Date: ${newsletter.date}`);
     
     return newsletter;
   } catch (error) {
-    console.error(`[cron] ❌ Generation failed:`, error);
+    console.error(`[gen] ❌ Generation failed:`, error);
     return null;
   }
 }
@@ -579,6 +700,11 @@ async function notifyTelegram(message: string): Promise<void> {
 
 if (ENABLE_CRON) {
   cron.schedule(CRON_SCHEDULE, async () => {
+    // Skip if we already have today's newsletter (e.g., auto-generated by a paying customer)
+    if (hasNewsletterForToday()) {
+      console.log(`[cron] Already have a newsletter for ${todayPT()}, skipping`);
+      return;
+    }
     const newsletter = await generateAndPublish();
     
     if (newsletter) {
