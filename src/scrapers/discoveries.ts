@@ -18,6 +18,8 @@ const SEARCH_STRATEGIES = {
     "e2b",
     "firecracker agent",
     "code interpreter sandbox",
+    "wasm agent",
+    "agent container",
   ],
   // Privacy: Local, self-hosted, private agent setups
   privacy: [
@@ -26,6 +28,8 @@ const SEARCH_STRATEGIES = {
     "private ai agent",
     "ollama agent",
     "local code assistant",
+    "on-device llm",
+    "private coding assistant",
   ],
   // Integration: Real-world connections
   integration: [
@@ -34,6 +38,10 @@ const SEARCH_STRATEGIES = {
     "claude api integration",
     "mcp server",
     "agent browser",
+    "ai browser automation",
+    "playwright ai",
+    "agent api",
+    "function calling",
   ],
   // Workflow: Stories of what people built
   workflow: [
@@ -42,6 +50,10 @@ const SEARCH_STRATEGIES = {
     "automated with gpt",
     "agent workflow",
     "Show HN agent",
+    "multi-agent",
+    "agent orchestration",
+    "crew ai",
+    "autogen agent",
   ],
   // Tools: Developer tools for agents
   tool: [
@@ -52,6 +64,19 @@ const SEARCH_STRATEGIES = {
     "aider",
     "cursor",
     "continue dev",
+    "ai coding",
+    "code generation tool",
+    "agent sdk",
+  ],
+  // Skills: Agent capabilities and plugins
+  skill: [
+    "openclaw",
+    "agent skill",
+    "agent plugin",
+    "mcp tool",
+    "claude tool",
+    "x402",
+    "ai micropayment",
   ],
 };
 
@@ -91,6 +116,27 @@ export interface DiscoveryScraperConfig {
 }
 
 /**
+ * Simple retry wrapper for fetch calls
+ */
+async function fetchWithRetry(url: string, retries = 2): Promise<Response> {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return response;
+      if (response.status >= 500 && i < retries) {
+        await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
+        continue;
+      }
+      return response;
+    } catch (error) {
+      if (i === retries) throw error;
+      await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
+    }
+  }
+  throw new Error("fetchWithRetry exhausted");
+}
+
+/**
  * Scrape HackerNews for actionable discoveries.
  * 
  * Strategy:
@@ -121,7 +167,7 @@ export async function scrapeDiscoveries(
         const timestamp = Math.floor(Date.now() / 1000) - hoursAgo * 3600;
         const url = `${HN_SEARCH_API}?query=${encodeURIComponent(query)}&tags=story&numericFilters=created_at_i>${timestamp}&hitsPerPage=10`;
 
-        const response = await fetch(url);
+        const response = await fetchWithRetry(url);
         if (!response.ok) continue;
 
         const data = await response.json();
@@ -219,7 +265,7 @@ export async function scrapeDiscoveries(
 
 async function fetchHNItem(objectId: string): Promise<HNItem | null> {
   try {
-    const response = await fetch(`${HN_ITEM_API}/${objectId}`);
+    const response = await fetchWithRetry(`${HN_ITEM_API}/${objectId}`);
     if (!response.ok) return null;
     return await response.json();
   } catch {
@@ -375,19 +421,15 @@ function generateDefaultSteps(hit: HNHit, url: string): string[] {
   if (url.includes("github.com")) {
     const repoMatch = url.match(/github\.com\/([^\/]+\/[^\/]+)/);
     if (repoMatch) {
-      steps.push(`git clone https://github.com/${repoMatch[1]}`);
-      steps.push(`cd ${repoMatch[1].split("/")[1]}`);
-      steps.push("# Check README for setup instructions");
+      // Clean repo path — remove trailing /blob, /tree, etc.
+      const repoPath = repoMatch[1].replace(/\/(blob|tree|wiki|issues|pulls).*$/, "");
+      const repoName = repoPath.split("/")[1];
+      steps.push(`git clone https://github.com/${repoPath}.git`);
+      steps.push(`cd ${repoName}`);
+      steps.push("# See README for setup instructions");
     }
-  }
-  
-  // If it's a "Show HN", suggest checking the link
-  if (hit.title.includes("Show HN")) {
-    steps.push(`# Visit ${url} for setup instructions`);
-  }
-  
-  // Generic fallback
-  if (steps.length === 0) {
+  } else if (steps.length === 0) {
+    // Non-GitHub URL — just link to it
     steps.push(`# See ${url} for details`);
   }
   

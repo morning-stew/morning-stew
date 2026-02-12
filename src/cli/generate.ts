@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 
 import { compileNewsletter } from "../compiler";
+import { toLeanNewsletter } from "../types/newsletter";
 import { writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 
@@ -14,39 +15,25 @@ async function main() {
   const outputDir = join(process.cwd(), "output");
   mkdirSync(outputDir, { recursive: true });
 
-  // Write to file
+  // Write lean format (what consuming agents actually get)
+  const lean = toLeanNewsletter(newsletter);
   const filename = `${newsletter.id}.json`;
   const filepath = join(outputDir, filename);
-  writeFileSync(filepath, JSON.stringify(newsletter, null, 2));
+  writeFileSync(filepath, JSON.stringify(lean, null, 2));
 
-  console.log(`\n✅ Generated: ${filepath}`);
+  console.log(`\n✅ Generated (lean): ${filepath}`);
   console.log(`   ID: ${newsletter.id}`);
   console.log(`   Name: "${newsletter.name}"`);
   console.log(`   Date: ${newsletter.date}`);
-  console.log(`   Tokens: ~${newsletter.tokenCount}`);
 
-  // Also write a minimal version for ultra-low token consumption
-  const minimalNewsletter = {
-    id: newsletter.id,
-    n: newsletter.name,
-    d: newsletter.date,
-    // Minimal discovery format: title, category, first install step, url
-    disc: newsletter.discoveries.map((d) => ({
-      t: d.title,
-      c: d.category,
-      i: d.install.steps[0] || "",
-      u: d.source.url,
-    })),
-    u: newsletter.frameworkUpdates.map((u) => ({ t: u.title, u: u.url, b: u.breaking })),
-  };
+  const leanTokens = Math.ceil(JSON.stringify(lean).length / 4);
+  console.log(`   Tokens: ~${leanTokens}`);
 
-  const minimalFilename = `${newsletter.id}.min.json`;
-  const minimalFilepath = join(outputDir, minimalFilename);
-  writeFileSync(minimalFilepath, JSON.stringify(minimalNewsletter));
-
-  const minimalTokens = Math.ceil(JSON.stringify(minimalNewsletter).length / 4);
-  console.log(`\n✅ Minimal version: ${minimalFilepath}`);
-  console.log(`   Tokens: ~${minimalTokens}`);
+  // Also write full internal format for debugging/archival
+  const fullFilename = `${newsletter.id}.full.json`;
+  const fullFilepath = join(outputDir, fullFilename);
+  writeFileSync(fullFilepath, JSON.stringify(newsletter, null, 2));
+  console.log(`   Full (debug): ${fullFilepath}`);
 }
 
 main().catch(console.error);

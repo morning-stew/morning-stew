@@ -50,8 +50,44 @@ export interface RepoMetadata {
   isArchived: boolean;
 }
 
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
+
+function githubHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github.v3+json",
+    "User-Agent": "morning-stew-bot",
+  };
+  if (GITHUB_TOKEN) {
+    headers["Authorization"] = `Bearer ${GITHUB_TOKEN}`;
+  }
+  return headers;
+}
+
 /**
- * Fetch GitHub repo metadata for quality scoring
+ * Simple retry wrapper for fetch calls
+ */
+async function fetchWithRetry(url: string, options: RequestInit, retries = 2): Promise<Response> {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const response = await fetch(url, options);
+      if (response.status === 403 || response.status === 429) {
+        // Rate limited — wait and retry
+        const waitMs = Math.pow(2, i) * 2000;
+        console.log(`[quality] Rate limited on ${url}, retrying in ${waitMs}ms...`);
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+      return response;
+    } catch (error) {
+      if (i === retries) throw error;
+      await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
+    }
+  }
+  throw new Error("fetchWithRetry exhausted");
+}
+
+/**
+ * Fetch GitHub repo metadata for quality scoring (with auth + retries)
  */
 export async function fetchRepoMetadata(repoUrl: string): Promise<RepoMetadata | null> {
   const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
@@ -61,12 +97,10 @@ export async function fetchRepoMetadata(repoUrl: string): Promise<RepoMetadata |
   const cleanRepo = repo.replace(/\.git$/, "").split("#")[0].split("?")[0];
 
   try {
-    const response = await fetch(`https://api.github.com/repos/${owner}/${cleanRepo}`, {
-      headers: {
-        Accept: "application/vnd.github.v3+json",
-        "User-Agent": "morning-stew-bot",
-      },
-    });
+    const response = await fetchWithRetry(
+      `https://api.github.com/repos/${owner}/${cleanRepo}`,
+      { headers: githubHeaders() }
+    );
 
     if (!response.ok) return null;
 
@@ -75,14 +109,9 @@ export async function fetchRepoMetadata(repoUrl: string): Promise<RepoMetadata |
     // Check last commit
     let lastCommitDaysAgo = 999;
     try {
-      const commitsRes = await fetch(
+      const commitsRes = await fetchWithRetry(
         `https://api.github.com/repos/${owner}/${cleanRepo}/commits?per_page=1`,
-        {
-          headers: {
-            Accept: "application/vnd.github.v3+json",
-            "User-Agent": "morning-stew-bot",
-          },
-        }
+        { headers: githubHeaders() }
       );
       if (commitsRes.ok) {
         const commits = await commitsRes.json();
@@ -95,28 +124,31 @@ export async function fetchRepoMetadata(repoUrl: string): Promise<RepoMetadata |
       // Ignore commit fetch errors
     }
 
-    // Check README content
+    // Check README content — look for more specific install indicators
     let hasInstallDocs = false;
+    let readmeQuality = 0; // 0-3 scale
     try {
-      const readmeRes = await fetch(
+      const readmeRes = await fetchWithRetry(
         `https://api.github.com/repos/${owner}/${cleanRepo}/readme`,
-        {
-          headers: {
-            Accept: "application/vnd.github.v3+json",
-            "User-Agent": "morning-stew-bot",
-          },
-        }
+        { headers: githubHeaders() }
       );
       if (readmeRes.ok) {
         const readmeData = await readmeRes.json();
         const content = Buffer.from(readmeData.content, "base64").toString("utf-8").toLowerCase();
-        hasInstallDocs = 
-          content.includes("install") || 
-          content.includes("npm") || 
-          content.includes("pip") ||
-          content.includes("cargo") ||
-          content.includes("getting started") ||
-          content.includes("quick start");
+
+        // Check for install section headers
+        const hasInstallHeader = /#{1,3}\s*(install|setup|getting\s*started|quick\s*start)/i.test(content);
+        // Check for code blocks with commands
+        const hasCodeBlocks = /```(?:bash|sh|shell)?\n.*(?:npm|pip|cargo|brew|git clone|docker)/s.test(content);
+        // Check for inline install commands
+        const hasInlineCommands = /`(?:npm|pip|cargo|brew)\s+install\s+/i.test(content);
+
+        hasInstallDocs = hasInstallHeader || hasCodeBlocks || hasInlineCommands;
+
+        // README quality scoring
+        if (content.length > 3000) readmeQuality++;
+        if (hasInstallHeader) readmeQuality++;
+        if (hasCodeBlocks || hasInlineCommands) readmeQuality++;
       }
     } catch {
       // Ignore readme fetch errors
@@ -127,9 +159,9 @@ export async function fetchRepoMetadata(repoUrl: string): Promise<RepoMetadata |
       forks: data.forks_count || 0,
       openIssues: data.open_issues_count || 0,
       lastCommitDaysAgo,
-      hasReadme: !!data.has_wiki || data.size > 0,
+      hasReadme: data.size > 0,
       hasInstallDocs,
-      contributorCount: data.network_count || 1,
+      contributorCount: data.network_count || data.forks_count || 1,
       isArchived: data.archived || false,
     };
   } catch (error) {
@@ -150,32 +182,70 @@ export async function scoreDiscovery(discovery: Discovery): Promise<QualityScore
   let genuineUtility = 0;
 
   // 1. Novel Value - Check if title/description suggests unique capability
-  const novelKeywords = [
-    "first", "only", "new approach", "novel", "unique", "unlike",
-    "alternative to", "replaces", "better than", "faster than"
-  ];
   const text = `${discovery.title} ${discovery.what} ${discovery.oneLiner}`.toLowerCase();
-  if (novelKeywords.some(k => text.includes(k))) {
+
+  // Strong novelty signals
+  const strongNovelKeywords = [
+    "first", "only", "new approach", "novel", "unique", "unlike",
+    "alternative to", "replaces", "better than", "faster than",
+    "introducing", "launch", "show hn", "open source",
+  ];
+  // Moderate novelty signals — specific to the agent ecosystem
+  const agentSpecificKeywords = [
+    "mcp", "x402", "openclaw", "claude", "anthropic",
+    "function calling", "tool use", "agent", "sandbox",
+    "multi-agent", "orchestration", "agentic",
+  ];
+
+  const strongHits = strongNovelKeywords.filter((k) => text.includes(k));
+  const agentHits = agentSpecificKeywords.filter((k) => text.includes(k));
+
+  if (strongHits.length >= 2) {
     novelValue = 1;
-    reasons.push("Claims novel approach");
+    reasons.push(`Strong novelty: ${strongHits.slice(0, 2).join(", ")}`);
+  } else if (strongHits.length >= 1 || agentHits.length >= 2) {
+    novelValue = 0.8;
+    reasons.push(`Good novelty: ${[...strongHits, ...agentHits].slice(0, 2).join(", ")}`);
+  } else if (agentHits.length >= 1) {
+    novelValue = 0.6;
+    reasons.push(`Agent-relevant: ${agentHits[0]}`);
   } else if (discovery.category === "skill" || discovery.category === "tool") {
-    novelValue = 0.5;
+    novelValue = 0.4;
     reasons.push("Tool/skill category (moderate novelty assumed)");
   }
 
-  // 2. Evidence of Real Usage - Check engagement signals
+  // 2. Evidence of Real Usage - Check engagement signals (more granular)
   const engagement = discovery.signals?.engagement || 0;
+  const comments = (discovery.signals as any)?.comments || 0;
+
   if (engagement >= 1000) {
     realUsage = 1;
-    reasons.push(`Strong engagement: ${engagement}`);
+    reasons.push(`Strong engagement: ${engagement} stars/points`);
+  } else if (engagement >= 500) {
+    realUsage = 0.85;
+    reasons.push(`High engagement: ${engagement}`);
   } else if (engagement >= 100) {
     realUsage = 0.7;
     reasons.push(`Good engagement: ${engagement}`);
+  } else if (engagement >= 50) {
+    realUsage = 0.55;
+    reasons.push(`Moderate engagement: ${engagement}`);
   } else if (engagement >= 20) {
     realUsage = 0.4;
     reasons.push(`Some engagement: ${engagement}`);
+  } else if (engagement >= 5) {
+    realUsage = 0.2;
+    reasons.push(`Early stage: ${engagement}`);
   } else {
-    reasons.push(`Low engagement: ${engagement}`);
+    reasons.push(`Very low engagement: ${engagement}`);
+  }
+
+  // Bonus for active discussion (HN comments)
+  if (comments >= 50) {
+    realUsage = Math.min(1, realUsage + 0.15);
+    reasons.push(`Active discussion: ${comments} comments`);
+  } else if (comments >= 20) {
+    realUsage = Math.min(1, realUsage + 0.1);
   }
 
   // For GitHub repos, fetch more detailed metadata
@@ -241,18 +311,39 @@ export async function scoreDiscovery(discovery: Discovery): Promise<QualityScore
     }
   }
 
-  // 5. Genuine Utility - Check for actionable patterns
-  const actionablePatterns = [
-    "agent", "automate", "ai", "llm", "workflow", "sandbox", "mcp",
-    "api", "cli", "tool", "framework", "sdk", "library"
+  // 5. Genuine Utility - Check for actionable patterns (weighted by specificity)
+  const highValuePatterns = [
+    "mcp", "x402", "openclaw", "agent framework", "sandbox",
+    "function calling", "tool use", "code interpreter",
+    "multi-agent", "orchestration", "agent skill",
   ];
-  const utilityMatches = actionablePatterns.filter(p => text.includes(p));
-  if (utilityMatches.length >= 3) {
-    genuineUtility = 1;
-    reasons.push(`High utility: ${utilityMatches.slice(0, 3).join(", ")}`);
-  } else if (utilityMatches.length >= 1) {
-    genuineUtility = 0.6;
-    reasons.push(`Moderate utility: ${utilityMatches.join(", ")}`);
+  const mediumValuePatterns = [
+    "agent", "automate", "llm", "workflow", "cli tool",
+    "api", "sdk", "framework", "library", "browser automation",
+    "web scraping", "file system", "database", "knowledge graph",
+    "memory", "persistent", "embedding", "vector", "retrieval",
+    "rag", "search", "index", "pipeline", "plugin",
+    "open source", "self-host",
+  ];
+  const lowValuePatterns = [
+    "ai", "machine learning", "tool", "utility", "helper",
+    "data", "analysis", "monitor", "dashboard",
+  ];
+
+  const highHits = highValuePatterns.filter((p) => text.includes(p));
+  const medHits = mediumValuePatterns.filter((p) => text.includes(p));
+  const lowHits = lowValuePatterns.filter((p) => text.includes(p));
+
+  const utilityScore = highHits.length * 0.35 + medHits.length * 0.15 + lowHits.length * 0.05;
+  genuineUtility = Math.min(1, utilityScore);
+
+  const allHits = [...highHits, ...medHits, ...lowHits].filter(Boolean);
+  if (genuineUtility >= 0.8) {
+    reasons.push(`High utility: ${allHits.slice(0, 3).join(", ")}`);
+  } else if (genuineUtility >= 0.4) {
+    reasons.push(`Good utility: ${allHits.slice(0, 3).join(", ")}`);
+  } else if (allHits.length > 0) {
+    reasons.push(`Some utility: ${allHits.slice(0, 2).join(", ")}`);
   } else {
     reasons.push("Unclear utility for agents");
   }
@@ -307,10 +398,13 @@ export function generateValueProp(discovery: Discovery): string {
   if (combined.includes("deploy")) capabilities.push("deployment automation");
 
   // Detect agent-specific value
-  if (combined.includes("mcp")) capabilities.push("MCP server");
-  if (combined.includes("claude") || combined.includes("anthropic")) capabilities.push("Claude-optimized");
+  if (combined.includes("mcp")) capabilities.push("MCP server support");
+  if (combined.includes("claude") || combined.includes("anthropic")) capabilities.push("Claude integration");
+  if (combined.includes("openclaw") || combined.includes("open claw")) capabilities.push("OpenClaw ecosystem");
   if (combined.includes("skill")) capabilities.push("agent skill");
   if (combined.includes("tool")) capabilities.push("agent tooling");
+  if (combined.includes("x402") || combined.includes("micropayment")) capabilities.push("x402 payments");
+  if (combined.includes("solana") || combined.includes("blockchain")) capabilities.push("on-chain capability");
 
   // Build value prop from detected capabilities
   if (capabilities.length >= 2) {
@@ -320,20 +414,26 @@ export function generateValueProp(discovery: Discovery): string {
   }
 
   // Fallback: Extract action verb from description
+  // Only use if the verb doesn't already appear in the oneLiner (avoids circular phrasing)
   const actionVerbs = [
-    { pattern: /automat(e|es|ing)/, value: "Automates" },
-    { pattern: /manag(e|es|ing)/, value: "Manages" },
-    { pattern: /generat(e|es|ing)/, value: "Generates" },
-    { pattern: /analyz(e|es|ing)|analysis/, value: "Analyzes" },
-    { pattern: /connect(s|ing)?/, value: "Connects" },
-    { pattern: /extend(s|ing)?/, value: "Extends" },
-    { pattern: /simpli(fy|fies|fying)/, value: "Simplifies" },
-    { pattern: /enabl(e|es|ing)/, value: "Enables" },
+    { pattern: /automat(e|es|ing)/, value: "Automates", keyword: "automat" },
+    { pattern: /manag(e|es|ing)/, value: "Manages", keyword: "manag" },
+    { pattern: /generat(e|es|ing)/, value: "Generates", keyword: "generat" },
+    { pattern: /analyz(e|es|ing)|analysis/, value: "Analyzes", keyword: "analy" },
+    { pattern: /connect(s|ing)?/, value: "Connects", keyword: "connect" },
+    { pattern: /extend(s|ing)?/, value: "Extends", keyword: "extend" },
+    { pattern: /simpli(fy|fies|fying)/, value: "Simplifies", keyword: "simpli" },
+    { pattern: /enabl(e|es|ing)/, value: "Enables", keyword: "enabl" },
+    { pattern: /orchestrat(e|es|ing)/, value: "Orchestrates", keyword: "orchestrat" },
+    { pattern: /stream(s|ing)?/, value: "Streamlines", keyword: "stream" },
   ];
 
-  for (const { pattern, value } of actionVerbs) {
+  for (const { pattern, value, keyword } of actionVerbs) {
     if (pattern.test(combined)) {
-      // Extract what it does from the description
+      const oneLinerLower = discovery.oneLiner.toLowerCase();
+      // Skip if the verb already appears in the oneLiner (would create circular phrasing)
+      if (oneLinerLower.includes(keyword)) continue;
+
       const whatItDoes = discovery.oneLiner.slice(0, 60).replace(/^[^-]*-\s*/, "");
       if (whatItDoes.length > 10) {
         return `${value} ${whatItDoes}`;
@@ -392,6 +492,51 @@ export function toAgentFormat(discovery: CuratedDiscovery): AgentDiscovery {
 }
 
 /**
+ * Auto-generate tags from discovery content.
+ * Tags are machine-filterable labels (e.g., ["openclaw", "solana", "multi-agent"]).
+ */
+export function generateTags(discovery: Discovery): string[] {
+  const text = `${discovery.title} ${discovery.oneLiner} ${discovery.what}`.toLowerCase();
+  const tags: string[] = [];
+
+  const tagMap: Record<string, string[]> = {
+    "openclaw":     ["openclaw", "open claw", "open-claw"],
+    "mcp":          ["mcp", "model context protocol"],
+    "solana":       ["solana", "sol ", "spl token"],
+    "multi-agent":  ["multi-agent", "multi agent", "orchestration", "swarm"],
+    "claude":       ["claude", "anthropic"],
+    "sandbox":      ["sandbox", "isolat", "containeriz"],
+    "cli":          ["cli tool", "command line", "terminal"],
+    "browser":      ["browser", "puppeteer", "playwright", "selenium"],
+    "database":     ["postgres", "sqlite", "database", " sql ", "mysql"],
+    "workflow":     ["workflow", "pipeline", "automation"],
+    "x402":         ["x402", "micropayment"],
+    "skill":        ["skill", "agent skill"],
+    "rag":          ["rag", "retrieval", "vector", "embedding"],
+    "self-host":    ["self-host", "local model", "ollama", "local-first"],
+    "github":       ["github"],
+    "memory":       ["memory", "persistent", "long-term memory"],
+    "api":          ["api", "sdk", "rest api", "graphql"],
+    "devtools":     ["devtool", "developer tool", "debugging", "profil"],
+    "llm":          ["llm", "language model", "fine-tun"],
+    "docker":       ["docker", "container", "kubernetes", "k8s"],
+  };
+
+  for (const [tag, patterns] of Object.entries(tagMap)) {
+    if (patterns.some((p) => text.includes(p))) {
+      tags.push(tag);
+    }
+  }
+
+  // Always include the category as a tag
+  if (!tags.includes(discovery.category)) {
+    tags.push(discovery.category);
+  }
+
+  return tags.slice(0, 6); // Cap at 6 tags
+}
+
+/**
  * Curate discoveries through the quality rubric
  */
 export async function curateDiscoveries(
@@ -407,11 +552,13 @@ export async function curateDiscoveries(
   for (const discovery of discoveries) {
     const qualityScore = await scoreDiscovery(discovery);
     const valueProp = generateValueProp(discovery);
+    const tags = generateTags(discovery);
 
     const curated: CuratedDiscovery = {
       ...discovery,
       qualityScore,
       valueProp,
+      tags,
     };
 
     // Add skip reason if below threshold

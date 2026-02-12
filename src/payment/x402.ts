@@ -1,4 +1,4 @@
-import type { Subscription, SubscriptionTier, Pricing } from "../types";
+import type { Pricing } from "../types";
 import { DEFAULT_PRICING } from "../types";
 
 /**
@@ -77,41 +77,5 @@ export function buildRouteConfig(
     ],
     description: `Morning Stew newsletter issue ${issueId}`,
     mimeType: "application/json",
-  };
-}
-
-/**
- * Create a subscription record after successful payment.
- */
-export function createSubscription(
-  agentId: string,
-  tier: SubscriptionTier,
-  network: Network,
-  transactionHash: string
-): Subscription {
-  const now = new Date();
-  let expiresAt: string | undefined;
-
-  if (tier === "weekly") {
-    expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  } else if (tier === "monthly") {
-    expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  }
-
-  // Map network to chain name
-  const chainMap: Record<Network, "base" | "monad" | "solana"> = {
-    [NETWORKS.SOLANA_MAINNET]: "solana",
-    [NETWORKS.SOLANA_DEVNET]: "solana",
-  };
-
-  return {
-    id: `sub_${transactionHash.slice(0, 16)}`,
-    walletAddress: agentId.toLowerCase(),
-    tier,
-    chain: chainMap[network] || "solana",
-    currency: "USDC",
-    createdAt: now.toISOString(),
-    expiresAt,
-    issuesRemaining: tier === "bulk_250" ? 250 : undefined,
   };
 }

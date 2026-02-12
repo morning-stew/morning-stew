@@ -1,5 +1,4 @@
 // Legacy scrapers (still used for some content)
-export { scrapeTwitter, SEARCH_QUERIES } from "./twitter";
 export { scrapeClawHub, getSkillDetails } from "./clawhub";
 export { scrapeGitHubReleases } from "./github";
 export { scrapeHackerNews } from "./hackernews";
@@ -7,9 +6,10 @@ export { scrapeHackerNews } from "./hackernews";
 // New discovery-based scrapers
 export { scrapeDiscoveries } from "./discoveries";
 export { scrapeGitHubTrending } from "./github-trending";
+export { scrapeClawIndex } from "./clawindex";
 
-// Curated Twitter feed (primary source)
-export { scrapeTwitterFeed, PRIORITY_ACCOUNTS, RELEVANCE_KEYWORDS } from "./twitter-feed";
+// X/Twitter API — alternating Following feed + keyword search
+export { scrapeTwitterFeed, scrapeHomeTimeline, scrapeXApiSearch, SEARCH_QUERIES, resetTwitterBudget, fetchTweetContent } from "./twitter-api";
 
-// Editor DMs - suggestions from @aboozle
+// Editor DMs via X API — suggestions from @aboozle
 export { scrapeEditorDMs, EDITOR_HANDLE } from "./twitter-dms";

@@ -98,4 +98,37 @@ export type OnRadarItem = z.infer<typeof OnRadarItemSchema>;
 export type SkippedItem = z.infer<typeof SkippedItemSchema>;
 
 // Re-export discovery types
-export { DiscoverySchema, type Discovery, type DiscoveryCategory } from "./discovery";
+export { DiscoverySchema, type Discovery, type DiscoveryCategory, toLeanDiscovery } from "./discovery";
+
+/**
+ * Lean newsletter format — what consuming agents actually receive.
+ * No essays, no noise, just actionable commands and scores.
+ */
+export function toLeanNewsletter(n: Newsletter) {
+  const lean: Record<string, any> = {
+    id: n.id,
+    name: n.name,
+    date: n.date,
+    discoveries: n.discoveries.map(toLeanDiscovery),
+  };
+
+  // Only include frameworkUpdates if non-empty and has breaking changes
+  if (n.frameworkUpdates?.length > 0) {
+    lean.frameworkUpdates = n.frameworkUpdates.map((u) => ({
+      title: u.title,
+      url: u.url,
+      breaking: u.breaking,
+      summary: u.summary,
+    }));
+  }
+
+  // Only include securityNotes if there's something worth flagging
+  const importantNotes = n.securityNotes?.filter(
+    (s) => !s.includes("Always review") // skip generic advice
+  );
+  if (importantNotes?.length > 0) {
+    lean.securityNotes = importantNotes;
+  }
+
+  return lean;
+}

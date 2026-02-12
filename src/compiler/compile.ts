@@ -1,108 +1,248 @@
 import type { Newsletter, Discovery } from "../types";
+import { toLeanNewsletter } from "../types/newsletter";
 import { generateId, generateName } from "./names";
 import { 
   scrapeGitHubReleases, 
   scrapeDiscoveries,
   scrapeGitHubTrending,
+  scrapeClawIndex,
   scrapeTwitterFeed,
+  scrapeXApiSearch,
   scrapeEditorDMs,
+  resetTwitterBudget,
 } from "../scrapers";
 import { curateDiscoveries, type CuratedDiscovery } from "../curation";
+import { judgeBatch, isJudgeAvailable, type JudgeInput, type JudgeVerdict } from "../curation/llm-judge";
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "fs";
+import { join } from "path";
+
+/**
+ * Hard cap: max discoveries in a newsletter.
+ * Editor tips always get a slot. Remaining slots filled by best of timeline/HN/GH/search.
+ */
+const MAX_PICKS = 6;
 
 export interface CompileOptions {
   date?: Date;
   skipDiscoveries?: boolean;
   skipGitHubTrending?: boolean;
   skipGitHubReleases?: boolean;
-  skipTwitterFeed?: boolean;
-  skipEditorDMs?: boolean;   // Skip checking @aboozle DMs
-  skipCuration?: boolean;    // Skip quality filtering (for testing)
-  headless?: boolean;
+  skipClawIndex?: boolean;     // Skip ClawIndex directory scrape (default: true — off for now)
+  skipTwitter?: boolean;       // Skip all Twitter (timeline + search)
+  skipEditorDMs?: boolean;     // Skip checking editor tips
+  skipCuration?: boolean;      // Skip quality filtering (for testing)
+  maxPicks?: number;           // Override MAX_PICKS (default: 6)
 }
 
 /**
  * Compile all sources into a single newsletter issue.
  * 
- * QUALITY-FIRST APPROACH:
- * 1. Gather candidates from multiple sources
- * 2. Run through quality rubric (5-point scale)
- * 3. Only include discoveries scoring 3+ 
- * 4. Generate "On Our Radar" for promising but not-ready items
- * 5. Include "Didn't Make the Cut" for transparency
- * 
- * Sources:
- * - HackerNews - Actionable discoveries with install steps
- * - GitHub Trending - New agent-related repositories
- * - GitHub Releases - OpenClaw framework updates
- * - Twitter Feed - Curated accounts for agent tooling
+ * PIPELINE (order matters for cost control):
+ * 1. Editor tips (free, highest signal) — always included
+ * 2. Home timeline (Following feed) — PRIMARY Twitter source, you curate who to follow
+ * 3. HackerNews + GitHub (free) — bulk discovery, parallel
+ * 4. LLM judge everything against 5-point checklist
+ * 5. If still short on picks, run keyword search queries (BACKUP)
+ * 6. Quality curation — final ranking, hard cap at 6
  */
 export async function compileNewsletter(
   options: CompileOptions = {}
 ): Promise<Newsletter> {
   const date = options.date || new Date();
   const dateStr = date.toISOString().split("T")[0];
+  const maxPicks = options.maxPicks || MAX_PICKS;
 
-  console.log(`[compile] Generating newsletter for ${dateStr}`);
-  console.log(`[compile] Quality-first curation enabled`);
+  console.log(`[compile] Generating newsletter for ${dateStr} (max ${maxPicks} picks)`);
 
-  // Scrape all sources in parallel
-  const [hnDiscoveries, ghDiscoveries, twitterDiscoveries, editorPicks, frameworkUpdates] = await Promise.all([
-    options.skipDiscoveries 
-      ? [] 
-      : scrapeDiscoveries({ maxPerCategory: 3, minPoints: 20, hoursAgo: 48 }),
-    options.skipGitHubTrending 
-      ? [] 
-      : scrapeGitHubTrending({ maxResults: 10, minStars: 50, sinceDays: 7 }),
-    options.skipTwitterFeed
-      ? []
-      : scrapeTwitterFeed({ maxPerAccount: 5, hoursAgo: 48, minRelevanceScore: 25, headless: options.headless ?? true }),
-    options.skipEditorDMs
-      ? []
-      : scrapeEditorDMs({ headless: options.headless ?? true }),
-    options.skipGitHubReleases 
-      ? [] 
-      : scrapeGitHubReleases({ since: new Date(Date.now() - 48 * 60 * 60 * 1000) }),
+  // Reset Twitter API spend tracker — $0.75 hard cap per generation
+  resetTwitterBudget(0.75);
+
+  // ── PHASE 1: Editor tips (free, instant) ──
+
+  const editorPicks = options.skipEditorDMs ? [] : await scrapeEditorDMs();
+  console.log(`[compile] Editor tips: ${editorPicks.length}`);
+
+  // ── PHASE 2: Twitter — alternating Following feed + keyword search ──
+  // Reads ~15 tweets from Following, then ~15 from keyword search, repeat.
+  // Keeps going until target discoveries met, budget hit, or sources exhausted.
+  // The LLM judge is never forced to accept — if it's strict, we just keep alternating.
+
+  let twitterDiscoveries: Discovery[] = [];
+  if (!options.skipTwitter) {
+    const slotsNeeded = Math.max(1, maxPicks - editorPicks.length);
+    console.log(`[compile] Twitter: need ~${slotsNeeded} discoveries (${editorPicks.length} editor picks already)`);
+    twitterDiscoveries = await scrapeTwitterFeed({
+      targetDiscoveries: slotsNeeded,
+      batchSize: 15,        // alternate source every 15 tweets
+      maxBatches: 10,       // hard cap: 10 batches = 150 tweets max
+      sinceHours: 48,
+    });
+    console.log(`[compile] Twitter: ${twitterDiscoveries.length} discoveries from alternating feed`);
+  }
+
+  // ── PHASE 3: Free sources (HN + GitHub + ClawIndex) in parallel ──
+
+  const [hnDiscoveries, ghDiscoveries, frameworkUpdates, clawIndexDiscoveries] = await Promise.all([
+    options.skipDiscoveries ? [] : scrapeDiscoveries({ maxPerCategory: 3, minPoints: 20, hoursAgo: 48 }),
+    options.skipGitHubTrending ? [] : scrapeGitHubTrending({ maxResults: 15, minStars: 30, sinceDays: 7 }),
+    options.skipGitHubReleases ? [] : scrapeGitHubReleases({ since: new Date(Date.now() - 48 * 60 * 60 * 1000) }),
+    (options.skipClawIndex !== false) ? [] : scrapeClawIndex({ maxProjects: 15 }),
   ]);
 
-  console.log(`[compile] Raw candidates: HN=${hnDiscoveries.length}, GH=${ghDiscoveries.length}, Twitter=${twitterDiscoveries.length}, Editor=${editorPicks.length}`);
+  console.log(`[compile] Free sources: HN=${hnDiscoveries.length}, GH=${ghDiscoveries.length}, ClawIndex=${clawIndexDiscoveries.length}`);
 
-  // Combine and dedupe discoveries
-  // Editor picks go first (highest priority), then other sources
-  const allDiscoveries = dedupeDiscoveries([...editorPicks, ...hnDiscoveries, ...ghDiscoveries, ...twitterDiscoveries]);
-  console.log(`[compile] After dedupe: ${allDiscoveries.length} unique discoveries`);
+  // ── PHASE 4: LLM-enrich editor tips ──
 
-  // Run through quality curation
+  let enrichedEditorPicks = editorPicks;
+  if (isJudgeAvailable() && editorPicks.length > 0) {
+    console.log(`[compile] Enriching ${editorPicks.length} editor tips with LLM...`);
+    const editorInputs: JudgeInput[] = editorPicks.map((d) => ({
+      content: `${d.title}\n\n${d.what}\n\nURL: ${d.source.url}`,
+      source: d.source.type,
+      author: d.source.author,
+      externalUrl: d.source.url,
+      engagement: 9999,
+    }));
+
+    const editorVerdicts = await judgeBatch(editorInputs, 3);
+    enrichedEditorPicks = editorPicks.map((d, i) => {
+      const v = editorVerdicts[i];
+      if (v && v.actionable) {
+        return {
+          ...d,
+          title: v.title || d.title,
+          oneLiner: v.oneLiner || d.oneLiner,
+          what: v.oneLiner || d.what,
+          why: v.valueProp || d.why,
+          impact: v.valueProp || d.impact,
+          install: v.installHint
+            ? { ...d.install, steps: [v.installHint] }
+            : d.install,
+        };
+      }
+      return d; // Editor tips always stay regardless
+    });
+  }
+
+  // ── PHASE 5: LLM judge on HN + GitHub ──
+  // Editor picks are pre-enriched. Timeline discoveries are pre-judged in the scraper.
+  // Only HN and GitHub need judging here.
+
+  const allRaw = dedupeDiscoveries([
+    ...enrichedEditorPicks,
+    ...twitterDiscoveries,
+    ...clawIndexDiscoveries,
+    ...hnDiscoveries,
+    ...ghDiscoveries,
+  ]);
+
+  const isPreJudged = (d: Discovery) =>
+    d.id.startsWith("editor-") || d.id.startsWith("x-api-") || d.id.startsWith("clawindex-");
+  const preJudged = allRaw.filter(isPreJudged);
+  const needsJudging = allRaw.filter((d) => !isPreJudged(d));
+
+  let judgedAll = allRaw;
+  if (isJudgeAvailable() && !options.skipCuration && needsJudging.length > 0) {
+    console.log(`[compile] LLM judging ${needsJudging.length} HN/GitHub discoveries (${preJudged.length} pre-judged)...`);
+
+    const inputs: JudgeInput[] = needsJudging.map((d) => ({
+      content: `${d.title}\n\n${d.what}`,
+      source: d.source.type,
+      author: d.source.author,
+      externalUrl: d.source.url,
+      engagement: d.signals?.engagement,
+    }));
+
+    const verdicts = await judgeBatch(inputs, 5);
+    const passed: Discovery[] = [];
+
+    for (let i = 0; i < needsJudging.length; i++) {
+      const d = needsJudging[i];
+      const v = verdicts[i];
+      if (v && v.actionable && v.confidence >= 0.5) {
+        const s = v.scores;
+        const allPass = s && s.utility >= 0.5 && s.downloadability >= 0.5 && s.specificity >= 0.5 && s.signal >= 0.5 && s.novelty >= 0.5;
+        if (allPass || !s) {
+          passed.push({
+            ...d,
+            title: v.title || d.title,
+            oneLiner: v.oneLiner || d.oneLiner,
+            what: v.oneLiner || d.what,
+            why: v.valueProp || d.why,
+            impact: v.valueProp || d.impact,
+          });
+        } else {
+          const failedCriteria = Object.entries(s).filter(([, score]) => score < 0.5).map(([k]) => k).join(", ");
+          console.log(`[compile]   SKIP (score fail): "${d.title.slice(0, 50)}..." → failed: ${failedCriteria}`);
+        }
+      } else if (v && !v.actionable) {
+        console.log(`[compile]   SKIP: "${d.title.slice(0, 50)}..." → ${v.skipReason || "Not actionable"}`);
+      } else {
+        passed.push(d);
+      }
+    }
+
+    console.log(`[compile] LLM judge: ${passed.length}/${needsJudging.length} passed`);
+    judgedAll = [...preJudged, ...passed];
+  }
+
+  // ── PHASE 6: Need more? Extra keyword search (LAST RESORT) ──
+  // The alternating loop already tried both Following + search.
+  // This only fires if we still need picks AND have budget left.
+
+  if (!options.skipTwitter && judgedAll.length < maxPicks) {
+    const deficit = maxPicks - judgedAll.length;
+    const extraQueries = Math.min(4, Math.ceil(deficit / 2));
+
+    console.log(`[compile] Still only ${judgedAll.length}/${maxPicks} picks — trying ${extraQueries} more keyword queries as last resort...`);
+
+    const extraDiscoveries = await scrapeXApiSearch({
+      maxResultsPerQuery: 15,
+      sinceHours: 48,
+      queries: getTopQueries(extraQueries),
+    });
+
+    if (extraDiscoveries.length > 0) {
+      judgedAll = dedupeDiscoveries([...judgedAll, ...extraDiscoveries]);
+      console.log(`[compile] After extra search: ${judgedAll.length} total candidates`);
+    } else {
+      console.log(`[compile] No new discoveries from extra search`);
+    }
+  }
+
+  // ── PHASE 7: Quality curation + final assembly ──
+
+  const allDiscoveries = judgedAll;
+
+  console.log(`[compile] Total candidates for curation: ${allDiscoveries.length}`);
+
   let picks: CuratedDiscovery[] = [];
   let onRadar: { title: string; url: string; reason: string }[] = [];
   let skipped: { title: string; url?: string; reason: string }[] = [];
   let isQuietWeek = false;
 
   if (options.skipCuration) {
-    // Skip curation - just use raw discoveries (for testing)
     console.log(`[compile] Skipping curation (test mode)`);
-    picks = allDiscoveries.map(d => ({
+    picks = allDiscoveries.slice(0, maxPicks).map(d => ({
       ...d,
       qualityScore: { total: 0, novelValue: 0, realUsage: 0, installProcess: 0, documentation: 0, genuineUtility: 0, reasons: [] },
       valueProp: d.oneLiner,
     }));
   } else {
-    // Full curation with quality rubric
     const curation = await curateDiscoveries(allDiscoveries, { 
       minScore: 3, 
-      maxPicks: 10 
+      maxPicks,
     });
 
     picks = curation.picks;
     isQuietWeek = curation.isQuietWeek;
 
-    // Convert onRadar to newsletter format
     onRadar = curation.onRadar.map(d => ({
       title: d.title,
       url: d.source.url,
       reason: d.skipReason || "Needs more traction",
     }));
 
-    // Convert skipped to newsletter format
     skipped = curation.skipped.map(d => ({
       title: d.title,
       url: d.source.url,
@@ -110,7 +250,24 @@ export async function compileNewsletter(
     }));
   }
 
-  // Generate security notes
+  // Ensure editor picks are always included (they outrank everything)
+  const editorIds = new Set(enrichedEditorPicks.map((d) => d.id));
+  const editorInPicks = picks.filter((p) => editorIds.has(p.id));
+  const nonEditorPicks = picks.filter((p) => !editorIds.has(p.id));
+
+  const missingEditors = enrichedEditorPicks.filter(
+    (d) => !picks.some((p) => p.id === d.id)
+  );
+  if (missingEditors.length > 0) {
+    console.log(`[compile] Forcing ${missingEditors.length} editor picks back into newsletter`);
+    const forcedPicks: CuratedDiscovery[] = missingEditors.map((d) => ({
+      ...d,
+      qualityScore: { total: 5, novelValue: 5, realUsage: 5, installProcess: 3, documentation: 3, genuineUtility: 5, reasons: ["Editor pick"] },
+      valueProp: d.oneLiner,
+    }));
+    picks = [...forcedPicks, ...editorInPicks, ...nonEditorPicks].slice(0, maxPicks);
+  }
+
   const securityNotes = generateSecuritySummary(picks);
 
   const newsletter: Newsletter = {
@@ -126,33 +283,81 @@ export async function compileNewsletter(
     tokenCount: 0,
   };
 
-  // Estimate token count (rough: 4 chars per token)
   newsletter.tokenCount = Math.ceil(JSON.stringify(newsletter).length / 4);
+
+  // Generate the lean (agent-consumable) version
+  const lean = toLeanNewsletter(newsletter);
+  (newsletter as any)._lean = lean;
 
   console.log(`[compile] Generated "${newsletter.name}" (${newsletter.id})`);
   console.log(`[compile] Stats: ${picks.length} picks, ${onRadar.length} on radar, ${skipped.length} skipped`);
   if (isQuietWeek) {
-    console.log(`[compile] ⚠️ QUIET WEEK - fewer than 3 quality discoveries`);
+    console.log(`[compile] QUIET WEEK - fewer than 3 quality discoveries`);
   }
   console.log(`[compile] Categories: ${summarizeCategories(picks)}`);
-  console.log(`[compile] Estimated tokens: ${newsletter.tokenCount}`);
+  const leanTokens = Math.ceil(JSON.stringify(lean).length / 4);
+  console.log(`[compile] Lean output: ~${leanTokens} tokens (vs ${newsletter.tokenCount} full)`);
 
   return newsletter;
 }
 
+// ── Search queries ranked by value ──
+
+import { SEARCH_QUERIES } from "../scrapers/twitter-api";
+
+function getTopQueries(count: number): string[] {
+  return SEARCH_QUERIES.slice(0, count);
+}
+
+// ── Helpers ──
+
+function loadHistoricalKeys(lookbackCount = 10): Set<string> {
+  const keys = new Set<string>();
+  const issuesDir = join(process.cwd(), ".morning-stew", "issues");
+
+  if (!existsSync(issuesDir)) return keys;
+
+  try {
+    const files = readdirSync(issuesDir)
+      .filter((f) => f.endsWith(".json"))
+      .sort()
+      .slice(-lookbackCount);
+
+    for (const file of files) {
+      try {
+        const data = JSON.parse(readFileSync(join(issuesDir, file), "utf-8"));
+        const discoveries: any[] = data.discoveries || [];
+        for (const d of discoveries) {
+          if (d.source?.url) keys.add(d.source.url);
+          if (d.title) {
+            keys.add(d.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 30));
+          }
+        }
+      } catch {
+        // Skip corrupt files
+      }
+    }
+
+    if (keys.size > 0) {
+      console.log(`[compile] Loaded ${keys.size} historical keys from ${files.length} past issues`);
+    }
+  } catch {}
+
+  return keys;
+}
+
 function dedupeDiscoveries(discoveries: Discovery[]): Discovery[] {
-  const seen = new Set<string>();
+  const seen = loadHistoricalKeys();
+
   return discoveries.filter((d) => {
-    // Dedupe by source URL
     const key = d.source.url;
     if (seen.has(key)) return false;
     seen.add(key);
-    
-    // Also dedupe by similar titles
+
     const titleKey = d.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 30);
     if (seen.has(titleKey)) return false;
     seen.add(titleKey);
-    
+
     return true;
   });
 }
@@ -174,28 +379,15 @@ function generateSecuritySummary(discoveries: CuratedDiscovery[]): string[] {
   const unverified = discoveries.filter((d) => d.security === "unverified").length;
   const caution = discoveries.filter((d) => d.security === "caution").length;
 
-  if (verified > 0) {
-    notes.push(`✅ ${verified} discovery(ies) from verified sources`);
-  }
-  if (unverified > 0) {
-    notes.push(`⚠️ ${unverified} discovery(ies) not yet verified - review before installing`);
-  }
-  if (caution > 0) {
-    notes.push(`🚨 ${caution} discovery(ies) flagged for caution`);
-  }
-  
-  notes.push("💡 Always review code before running install commands");
+  if (verified > 0) notes.push(`${verified} discovery(ies) from verified sources`);
+  if (unverified > 0) notes.push(`${unverified} discovery(ies) not yet verified - review before installing`);
+  if (caution > 0) notes.push(`${caution} discovery(ies) flagged for caution`);
+  notes.push("Always review code before running install commands");
   
   return notes;
 }
 
-/**
- * Validate newsletter structure.
- */
 export function validateNewsletter(newsletter: Newsletter): boolean {
-  // Basic validation
-  if (!newsletter.id || !newsletter.name || !newsletter.date) {
-    return false;
-  }
+  if (!newsletter.id || !newsletter.name || !newsletter.date) return false;
   return true;
 }

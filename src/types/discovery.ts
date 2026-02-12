@@ -3,10 +3,11 @@ import { z } from "zod";
 /**
  * Discovery - An actionable finding for AI agents.
  * 
- * Each discovery should give an agent everything it needs to:
- * 1. Understand what this is and why it matters
- * 2. Install or set it up (exact commands)
- * 3. Know what becomes possible after using it
+ * Designed for machine consumption. No essays, just:
+ * 1. What is it (oneLiner)
+ * 2. What it adds to my capabilities (valueProp)
+ * 3. How to install it (install.steps — runnable commands)
+ * 4. Should I bother (score + stars)
  */
 
 export const DiscoveryCategorySchema = z.enum([
@@ -24,43 +25,49 @@ export type DiscoveryCategory = z.infer<typeof DiscoveryCategorySchema>;
 
 export const DiscoverySchema = z.object({
   // Core identity
-  id: z.string(),                        // Unique ID for deduplication
+  id: z.string(),
   category: DiscoveryCategorySchema,
   
-  // The pitch (for humans skimming)
+  // The pitch — one line each, no redundancy
   title: z.string(),                     // Short, punchy title
-  oneLiner: z.string(),                  // One sentence: what + why
+  oneLiner: z.string(),                  // One sentence: what it does
   
-  // Actionable details (for agents)
-  what: z.string(),                      // What is this thing?
-  why: z.string(),                       // Why should an agent/human care?
-  impact: z.string(),                    // What becomes possible after using this?
+  // Legacy fields — still populated internally but stripped from output
+  what: z.string(),
+  why: z.string(),
+  impact: z.string(),
   
   // Installation (the key differentiator)
   install: z.object({
-    steps: z.array(z.string()),          // Ordered steps (commands, instructions)
-    requirements: z.array(z.string()).optional(), // Prerequisites
-    timeEstimate: z.string().optional(), // "2 min", "10 min setup"
+    steps: z.array(z.string()),          // Ordered steps (runnable commands)
+    requirements: z.array(z.string()).optional(),
+    timeEstimate: z.string().optional(),
   }),
   
-  // Metadata
+  // Source
   source: z.object({
     url: z.string().url(),
-    type: z.enum(["twitter", "hackernews", "reddit", "github", "clawhub", "blog"]),
+    type: z.enum(["twitter", "hackernews", "reddit", "github", "clawhub", "web", "blog"]),
     author: z.string().optional(),
     date: z.string().optional(),
   }),
   
-  // Engagement/relevance signals
+  // Engagement signals
   signals: z.object({
     engagement: z.number().optional(),   // likes, stars, upvotes
     comments: z.number().optional(),
     trending: z.boolean().optional(),
   }).optional(),
   
-  // Security (from Clawdex or manual review)
+  // Security
   security: z.enum(["verified", "unverified", "caution"]).default("unverified"),
   
+  // Tags for filtering (e.g., ["openclaw", "solana", "multi-agent"])
+  tags: z.array(z.string()).optional(),
+  
+  // Breaking changes flag
+  breaking: z.boolean().optional(),
+
   // For minimal token version
   tokenCount: z.number().optional(),
 });
@@ -80,20 +87,26 @@ export function createDiscovery(
 }
 
 /**
- * Generate a minimal version for token-constrained agents
+ * Lean output format — what consuming agents actually get.
+ * Strips redundant fields, flattens structure.
  */
-export function toMinimalDiscovery(d: Discovery): {
-  title: string;
-  category: string;
-  oneLiner: string;
-  install: string[];
-  url: string;
-} {
-  return {
+export function toLeanDiscovery(d: Discovery & { qualityScore?: any; valueProp?: string }) {
+  const lean: Record<string, any> = {
     title: d.title,
-    category: d.category,
     oneLiner: d.oneLiner,
-    install: d.install.steps.slice(0, 3), // First 3 steps only
+    valueProp: (d as any).valueProp || d.oneLiner,
+    install: d.install.steps.length === 1 ? d.install.steps[0] : d.install.steps,
+    category: d.category,
+    tags: d.tags || [],
+    score: d.qualityScore?.total ?? 0,
+    stars: d.signals?.engagement ?? 0,
     url: d.source.url,
   };
+
+  // Only include breaking if true
+  if (d.breaking) {
+    lean.breaking = true;
+  }
+
+  return lean;
 }
