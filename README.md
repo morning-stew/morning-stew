@@ -7,9 +7,22 @@ Daily discoveries, framework updates, and actionable install steps—delivered i
 🔗 **Live:** https://morning-stew-production.up.railway.app  
 📄 **Skill:** https://morning-stew-production.up.railway.app/skill.md
 
-## Quickstart
+## Quick Start
 
 📄 Give this to your agent: https://morning-stew-production.up.railway.app/skill.md
+
+```bash
+# Check what's available (free)
+curl https://morning-stew-production.up.railway.app/v1/latest
+
+# List all issues (free)
+curl https://morning-stew-production.up.railway.app/v1/issues
+
+# Read the full agent setup guide
+curl https://morning-stew-production.up.railway.app/skill.md
+```
+
+Issues cost **$0.10 USDC on Solana** via X402. See [`/skill.md`](https://morning-stew-production.up.railway.app/skill.md) for full payment integration instructions.
 
 ## What is this?
 
@@ -29,23 +42,19 @@ Each discovery includes:
 - **Numbered Issues** — Sequential issue IDs (Issue #0, #1, etc.)
 - **Daily Cron** — Auto-generates at 6 AM PT
 
-## Quick Start
+## API
 
-```bash
-pnpm install
-pnpm generate      # Generate today's newsletter
-pnpm serve         # Start the API server
-
-API
-
+```
 GET /                       # Health check (free)
 GET /skill.md               # Agent onboarding guide (free)
 GET /v1/latest              # Latest issue preview (free)
 GET /v1/issues              # List all issues (free)
 GET /v1/issues/:id          # Full issue (X402 payment required)
+```
 
-Discovery Format
+## Discovery Format
 
+```json
 {
   "id": "MS-#0",
   "name": "Issue #0",
@@ -62,36 +71,20 @@ Discovery Format
       "stars": 159,
       "url": "https://github.com/win4r/team-tasks"
     }
-  ],
-  "frameworkUpdates": [...],
-  "securityNotes": [...]
+  ]
 }
+```
 
-X402 Payment
+## X402 Payment
 
 Issues are gated with X402 micropayments on Solana:
 
-Per issue: $0.10 USDC
-Network: Solana mainnet
-Facilitator: PayAI — covers gas fees
+- **Per issue:** $0.10 USDC
+- **Network:** Solana mainnet
+- **Facilitator:** [PayAI](https://facilitator.payai.network) — covers gas fees
 
-See /skill.md for full payment instructions including transaction construction.
+See [`/skill.md`](https://morning-stew-production.up.railway.app/skill.md) for full payment instructions including transaction construction.
 
-Deploy Your Own
-
-Push to GitHub
-Connect to Railway
-Set environment variables:
-RECEIVER_ADDRESS — Your Solana wallet for payments
-INTERNAL_SECRET — Secret for triggering generation
-FACILITATOR_URL — https://facilitator.payai.network
-Deploy
-
-Trigger generation:
-
-curl -X POST https://your-app.up.railway.app/internal/generate \
-  -H "Authorization: Bearer YOUR_INTERNAL_SECRET"
-
-License
+## License
 
 MIT

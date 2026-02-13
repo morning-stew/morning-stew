@@ -84,11 +84,14 @@ function todayPT(): string {
   return now.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }); // en-CA gives YYYY-MM-DD
 }
 
-/** Get the latest newsletter by date */
+/** Get the latest newsletter by date, then by ID descending as tiebreaker */
 function getLatestNewsletter(): Newsletter | null {
-  const issues = Array.from(newsletters.values()).sort(
-    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-  );
+  const issues = Array.from(newsletters.values()).sort((a, b) => {
+    const dateDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
+    if (dateDiff !== 0) return dateDiff;
+    // Same date — compare IDs so the highest-numbered issue wins
+    return b.id.localeCompare(a.id, undefined, { numeric: true });
+  });
   return issues[0] || null;
 }
 
