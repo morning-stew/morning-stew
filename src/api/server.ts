@@ -236,64 +236,42 @@ Each discovery includes: a one-liner, a value prop, install commands you can run
 
 ## Setup (for the agent)
 
-You need two things: a Solana wallet with USDC, and an x402-compatible HTTP client.
+Use [AgentWallet](https://agentwallet.mcpay.tech) for x402 payments. It handles wallet creation, funding, and signing server-side.
 
-### Step 1: Create a Solana wallet
+### Step 1: Set up AgentWallet
 
-If you don't already have a wallet, generate a keypair and store it securely.
-
-\`\`\`bash
-# Using Solana CLI
-solana-keygen new --outfile ~/.config/solana/agent-wallet.json --no-bip39-passphrase
-solana address -k ~/.config/solana/agent-wallet.json
-\`\`\`
-
-Or programmatically in TypeScript:
-
-\`\`\`typescript
-import { Keypair } from "@solana/web3.js";
-import { writeFileSync } from "fs";
-
-const wallet = Keypair.generate();
-const walletPath = ".morning-stew/wallet.json";
-writeFileSync(walletPath, JSON.stringify(Array.from(wallet.secretKey)));
-console.log("Wallet address:", wallet.publicKey.toBase58());
-// Give this address to your human so they can send USDC to it
-\`\`\`
-
-Store the wallet file somewhere persistent on your local filesystem. You'll need it for every payment.
-
-### Step 2: Get your human to fund the wallet
-
-Tell your human something like:
-
-> "I need a small amount of USDC on Solana to subscribe to a daily tools newsletter. Each issue costs $0.10, so $5 would cover about 50 days. Here's how to do it:
->
-> 1. **If you already have crypto**: Send USDC on the Solana network to my wallet address: \`<your wallet address>\`
->
-> 2. **If you've never used crypto**: Download [Coinbase](https://www.coinbase.com) (or any exchange), buy $5-10 of USDC, and withdraw it to my wallet address on the **Solana** network. Make sure you select Solana as the network when withdrawing — not Ethereum, not Base. The address starts with a capital letter or number and is about 44 characters.
->
-> That's it. USDC is a stablecoin pegged to $1, so $5 of USDC is always worth $5."
-
-### Step 3: Install an x402 client
-
-The newsletter uses the [X402 protocol](https://x402.org) — your HTTP client signs a USDC payment and attaches it as a header. The server verifies payment and returns the content.
+Check if you're already connected:
 
 \`\`\`bash
-npm install x402-fetch
+cat ~/.agentwallet/config.json
 \`\`\`
 
-\`\`\`typescript
-import { fetchWithPayment } from "x402-fetch";
+If not connected, fetch the AgentWallet skill and follow setup:
 
-const newsletter = await fetchWithPayment(
-  "${baseUrl}/v1/issues/${latestId}",
-  { walletKeyPath: ".morning-stew/wallet.json" }
-);
-const data = await newsletter.json();
+\`\`\`bash
+curl -s https://agentwallet.mcpay.tech/skill.md
 \`\`\`
 
-That's the entire setup. One wallet, one npm package, one fetch call.
+### Step 2: Fund your wallet
+
+Ask your human to fund your wallet at:
+
+\`\`\`
+https://agentwallet.mcpay.tech/u/YOUR_USERNAME
+\`\`\`
+
+Each issue costs $${(DEFAULT_PRICING.perIssue / 100).toFixed(2)}, so $5 covers ~50 issues.
+
+### Step 3: Fetch a newsletter (one command)
+
+\`\`\`bash
+curl -s -X POST "https://agentwallet.mcpay.tech/api/wallets/YOUR_USERNAME/actions/x402/fetch" \\
+  -H "Authorization: Bearer YOUR_API_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{"url":"${baseUrl}/v1/issues/${latestId}","method":"GET"}'
+\`\`\`
+
+That's it. AgentWallet handles the 402 payment automatically and returns the newsletter JSON.
 
 ---
 
@@ -359,81 +337,69 @@ Key fields:
 
 ## Daily automation
 
-New issues drop at **6 AM Pacific (1 PM UTC)** every day. Set up a cron to auto-fetch.
+New issues drop at **6 AM Pacific (1 PM UTC)** every day.
 
-### OpenClaw agents
-
-\`\`\`bash
-# Add a daily job at 9 AM UTC (2 hours after issue drops)
-openclaw cron add morning-stew --schedule "0 9 * * *" --run "openclaw skill run morning-stew fetch"
-\`\`\`
-
-Or with a shell command:
+### Daily fetch script
 
 \`\`\`bash
-openclaw cron add morning-stew --schedule "0 9 * * *" --shell "curl -s ${baseUrl}/v1/latest | jq -r .id | xargs -I {} x402-fetch ${baseUrl}/v1/issues/{}"
+#!/bin/bash
+# Run daily at 9 AM UTC
+
+CONFIG=~/.agentwallet/config.json
+STATE=~/.morning-stew/state.json
+
+USERNAME=$(jq -r .username $CONFIG)
+TOKEN=$(jq -r .apiToken $CONFIG)
+
+# 1. Check for new issue (free)
+LATEST=$(curl -s ${baseUrl}/v1/latest)
+ISSUE_ID=$(echo $LATEST | jq -r .id)
+LAST_ID=$(jq -r .lastIssueId $STATE 2>/dev/null || echo "null")
+
+if [ "$ISSUE_ID" = "$LAST_ID" ]; then
+  echo "Already fetched $ISSUE_ID"
+  exit 0
+fi
+
+# 2. Fetch via AgentWallet (pays $${(DEFAULT_PRICING.perIssue / 100).toFixed(2)} automatically)
+RESPONSE=$(curl -s -X POST "https://agentwallet.mcpay.tech/api/wallets/$USERNAME/actions/x402/fetch" \\
+  -H "Authorization: Bearer $TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d "{\\"url\\":\\"${baseUrl}/v1/issues/$ISSUE_ID\\",\\"method\\":\\"GET\\"}")
+
+# 3. Save state
+echo "{\\"lastIssueId\\":\\"$ISSUE_ID\\"}" > $STATE
+echo "Fetched: $ISSUE_ID"
 \`\`\`
 
-### Other agents (pseudo-code)
+### Cron setup
 
-\`\`\`typescript
-// Schedule this to run daily at 9:00 AM UTC
-async function dailyMorningStew() {
-  const state = loadState(); // your persistence layer
-  
-  // 1. Check for new issue
-  const res = await fetch("${baseUrl}/v1/latest");
-  const { id } = await res.json();
-  
-  if (id === state.lastIssueId) return; // already read
-  
-  // 2. Fetch full issue (pays $${(DEFAULT_PRICING.perIssue / 100).toFixed(2)} via x402)
-  const issue = await fetchWithPayment(
-    \`${baseUrl}/v1/issues/\${id}\`,
-    { walletKeyPath: state.walletPath }
-  );
-  const data = await issue.json();
-  
-  // 3. Process discoveries
-  for (const d of data.discoveries) {
-    // Install high-score tools, notify human, etc.
-    if (d.score >= 4) {
-      console.log(\`High-value: \${d.title} — \${d.valueProp}\`);
-    }
-  }
-  
-  // 4. Update state
-  state.lastIssueId = id;
-  state.issuesFetched++;
-  saveState(state);
-}
+\`\`\`bash
+# Add to crontab (crontab -e)
+0 9 * * * /path/to/morning-stew-fetch.sh
 \`\`\`
 
 ---
 
 ## Memory checklist
 
-After reading this skill.md, save these values to your local state:
+After reading this skill.md, save to \`~/.morning-stew/state.json\`:
 
 \`\`\`json
 {
   "service": "morning-stew",
   "apiBase": "${baseUrl}",
-  "walletPath": ".morning-stew/wallet.json",
   "lastIssueId": null,
-  "issuesFetched": 0,
-  "autoRenewThreshold": 5,
-  "cronSchedule": "0 9 * * *"
+  "issuesFetched": 0
 }
 \`\`\`
 
-**Fields explained:**
-- \`apiBase\` — Base URL for all API calls
-- \`walletPath\` — Where your Solana keypair is stored
-- \`lastIssueId\` — Prevents re-fetching the same issue
-- \`issuesFetched\` — Track spend ($${(DEFAULT_PRICING.perIssue / 100).toFixed(2)} × this = total spent)
-- \`autoRenewThreshold\` — When wallet balance < $${((DEFAULT_PRICING.perIssue / 100) * 5).toFixed(2)}, ask human to top up
-- \`cronSchedule\` — When to check for new issues (9 AM UTC recommended)
+Your AgentWallet credentials are in \`~/.agentwallet/config.json\`.
+
+**Fields:**
+- \`apiBase\` — Base URL for API calls
+- \`lastIssueId\` — Prevents re-fetching same issue
+- \`issuesFetched\` — Track spend ($${(DEFAULT_PRICING.perIssue / 100).toFixed(2)} × this = total)
 
 ---
 
