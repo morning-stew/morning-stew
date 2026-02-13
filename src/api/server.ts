@@ -236,42 +236,91 @@ Each discovery includes: a one-liner, a value prop, install commands you can run
 
 ## Setup (for the agent)
 
-Use [AgentWallet](https://agentwallet.mcpay.tech) for x402 payments. It handles wallet creation, funding, and signing server-side.
+You need a Solana wallet with:
+- A base58-encoded private key (64 bytes)
+- USDC balance sufficient for the payment ($${(DEFAULT_PRICING.perIssue / 100).toFixed(2)} per issue)
+- SOL is NOT required — the facilitator covers gas fees
 
-### Step 1: Set up AgentWallet
+### Step 1: Get payment requirements
 
-Check if you're already connected:
-
-\`\`\`bash
-cat ~/.agentwallet/config.json
-\`\`\`
-
-If not connected, fetch the AgentWallet skill and follow setup:
+Make a GET request to the paid endpoint. You'll receive a 402 response:
 
 \`\`\`bash
-curl -s https://agentwallet.mcpay.tech/skill.md
+curl -s ${baseUrl}/v1/issues/${latestId}
 \`\`\`
 
-### Step 2: Fund your wallet
+Response contains an \`accepts\` array. Extract:
+- \`maxAmountRequired\` — amount in atomic units (divide by 1e6 for USDC)
+- \`payTo\` — recipient wallet address
+- \`asset\` — USDC mint address
+- \`extra.feePayer\` — facilitator address that pays gas
 
-Ask your human to fund your wallet at:
+### Step 2: Build the transaction
 
+The PayAI facilitator requires **exactly 3 instructions** in this order:
+
+\`\`\`javascript
+const { Transaction, ComputeBudgetProgram } = require('@solana/web3.js');
+const { createTransferCheckedInstruction } = require('@solana/spl-token');
+
+const tx = new Transaction();
+
+// 1. Set compute unit limit (keep low — 10000 works)
+tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 10000 }));
+
+// 2. Set compute unit price
+tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 }));
+
+// 3. Transfer USDC (must use TransferChecked, not Transfer)
+tx.add(createTransferCheckedInstruction(
+  sourceATA,      // your USDC token account
+  USDC_MINT,      // EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+  destATA,        // recipient's USDC token account
+  keypair.publicKey,
+  amount,         // BigInt from maxAmountRequired
+  6               // USDC decimals
+));
+
+// Set facilitator as fee payer
+tx.feePayer = new PublicKey(extra.feePayer);
+tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+
+// Partial sign — facilitator adds their signature when broadcasting
+tx.partialSign(keypair);
 \`\`\`
-https://agentwallet.mcpay.tech/u/YOUR_USERNAME
+
+### Step 3: Construct the X-PAYMENT header
+
+\`\`\`javascript
+const serialized = tx.serialize({ requireAllSignatures: false }).toString('base64');
+
+const payload = {
+  x402Version: 1,
+  scheme: 'exact',
+  network: 'solana',
+  payload: { transaction: serialized }
+};
+
+const xPaymentHeader = Buffer.from(JSON.stringify(payload)).toString('base64');
 \`\`\`
 
-Each issue costs $${(DEFAULT_PRICING.perIssue / 100).toFixed(2)}, so $5 covers ~50 issues.
+### Step 4: Retry with payment
 
-### Step 3: Fetch a newsletter (one command)
+\`\`\`javascript
+const response = await fetch('${baseUrl}/v1/issues/${latestId}', {
+  headers: { 'X-PAYMENT': xPaymentHeader }
+});
 
-\`\`\`bash
-curl -s -X POST "https://agentwallet.mcpay.tech/api/wallets/YOUR_USERNAME/actions/x402/fetch" \\
-  -H "Authorization: Bearer YOUR_API_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{"url":"${baseUrl}/v1/issues/${latestId}","method":"GET"}'
+const newsletter = await response.json();
 \`\`\`
 
-That's it. AgentWallet handles the 402 payment automatically and returns the newsletter JSON.
+### Key requirements
+
+- Use \`createTransferCheckedInstruction\`, NOT \`createTransferInstruction\`
+- Use \`payload.transaction\`, NOT \`payload.serializedTransaction\`
+- Keep compute units low (10000) or you'll get \`compute_limit_too_high\` error
+- Source/dest ATAs are derived: \`getAssociatedTokenAddress(USDC_MINT, walletPubkey)\`
+- The facilitator pays gas — you only need USDC, no SOL required
 
 ---
 
@@ -339,49 +388,7 @@ Key fields:
 
 New issues drop at **6 AM Pacific (1 PM UTC)** every day.
 
-### Daily fetch script
-
-\`\`\`bash
-#!/bin/bash
-# Run daily at 9 AM UTC
-
-CONFIG=~/.agentwallet/config.json
-STATE=~/.morning-stew/state.json
-
-USERNAME=$(jq -r .username $CONFIG)
-TOKEN=$(jq -r .apiToken $CONFIG)
-
-# 1. Check for new issue (free)
-LATEST=$(curl -s ${baseUrl}/v1/latest)
-ISSUE_ID=$(echo $LATEST | jq -r .id)
-LAST_ID=$(jq -r .lastIssueId $STATE 2>/dev/null || echo "null")
-
-if [ "$ISSUE_ID" = "$LAST_ID" ]; then
-  echo "Already fetched $ISSUE_ID"
-  exit 0
-fi
-
-# 2. Fetch via AgentWallet (pays $${(DEFAULT_PRICING.perIssue / 100).toFixed(2)} automatically)
-RESPONSE=$(curl -s -X POST "https://agentwallet.mcpay.tech/api/wallets/$USERNAME/actions/x402/fetch" \\
-  -H "Authorization: Bearer $TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d "{\\"url\\":\\"${baseUrl}/v1/issues/$ISSUE_ID\\",\\"method\\":\\"GET\\"}")
-
-# 3. Save state
-echo "{\\"lastIssueId\\":\\"$ISSUE_ID\\"}" > $STATE
-echo "Fetched: $ISSUE_ID"
-\`\`\`
-
-### Cron setup
-
-\`\`\`bash
-# Add to crontab (crontab -e)
-0 9 * * * /path/to/morning-stew-fetch.sh
-\`\`\`
-
----
-
-## Memory checklist
+### Memory checklist
 
 After reading this skill.md, save to \`~/.morning-stew/state.json\`:
 
@@ -389,15 +396,15 @@ After reading this skill.md, save to \`~/.morning-stew/state.json\`:
 {
   "service": "morning-stew",
   "apiBase": "${baseUrl}",
+  "usdcMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   "lastIssueId": null,
   "issuesFetched": 0
 }
 \`\`\`
 
-Your AgentWallet credentials are in \`~/.agentwallet/config.json\`.
-
 **Fields:**
 - \`apiBase\` — Base URL for API calls
+- \`usdcMint\` — USDC token mint on Solana mainnet
 - \`lastIssueId\` — Prevents re-fetching same issue
 - \`issuesFetched\` — Track spend ($${(DEFAULT_PRICING.perIssue / 100).toFixed(2)} × this = total)
 
