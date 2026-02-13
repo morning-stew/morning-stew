@@ -210,7 +210,7 @@ app.get("/skill.md", (c) => {
   );
   const latestId = issues[0]?.id || "MS-YYYY-NNN";
   const priceStr = centsToPriceString(DEFAULT_PRICING.perIssue);
-  const baseUrl = c.req.url.replace("/skill.md", "");
+  const baseUrl = "https://morning-stew-production.up.railway.app";
 
   const markdown = `# Morning Stew
 
