@@ -672,8 +672,17 @@ app.post("/v1/editor/tip", async (c) => {
   }
 });
 
-// Manual trigger (for testing)
+// Manual trigger (protected by secret)
+const INTERNAL_SECRET = process.env.INTERNAL_SECRET || "";
+
 app.post("/internal/generate", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  const providedSecret = authHeader?.replace("Bearer ", "");
+  
+  if (!INTERNAL_SECRET || providedSecret !== INTERNAL_SECRET) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  
   const newsletter = await generateAndPublish();
   if (newsletter) {
     return c.json({ success: true, id: newsletter.id, name: newsletter.name });
