@@ -106,7 +106,7 @@ async function readTipsFile(): Promise<Discovery[]> {
     let oneLiner = note || `Editor pick: ${url}`;
     let what = note || `Suggested by editor`;
     let sourceUrl = url;
-    let sourceType: string = isGitHub ? "github" : "twitter";
+    let sourceType: "twitter" | "hackernews" | "reddit" | "github" | "clawhub" | "web" | "blog" = isGitHub ? "github" : "twitter";
     let installSteps = isGitHub
       ? [`git clone ${url}`, "See repo README for setup"]
       : [`See ${url}`];
@@ -130,7 +130,7 @@ async function readTipsFile(): Promise<Discovery[]> {
             const bestUrl = tweetData.urls[0];
             sourceUrl = bestUrl;
             const isLinkedGitHub = bestUrl.includes("github.com");
-            sourceType = isLinkedGitHub ? "github" : "web";
+            sourceType = isLinkedGitHub ? "github" as const : "web" as const;
             category = isLinkedGitHub ? "tool" : "workflow";
 
             if (isLinkedGitHub) {

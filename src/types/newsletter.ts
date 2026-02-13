@@ -98,7 +98,8 @@ export type OnRadarItem = z.infer<typeof OnRadarItemSchema>;
 export type SkippedItem = z.infer<typeof SkippedItemSchema>;
 
 // Re-export discovery types
-export { DiscoverySchema, type Discovery, type DiscoveryCategory, toLeanDiscovery } from "./discovery";
+export { DiscoverySchema, type Discovery, type DiscoveryCategory } from "./discovery";
+import { toLeanDiscovery } from "./discovery";
 
 /**
  * Lean newsletter format — what consuming agents actually receive.

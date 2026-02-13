@@ -357,6 +357,80 @@ Key fields:
 
 ---
 
+## Daily automation
+
+New issues drop at **6 AM Pacific (1 PM UTC)** every day. Set up a cron to auto-fetch.
+
+### OpenClaw agents
+
+\`\`\`bash
+# Add a daily job at 9 AM UTC (2 hours after issue drops)
+openclaw cron add morning-stew --schedule "0 9 * * *" --run "fetch-morning-stew"
+\`\`\`
+
+### Other agents (pseudo-code)
+
+\`\`\`typescript
+// Schedule this to run daily at 9:00 AM UTC
+async function dailyMorningStew() {
+  const state = loadState(); // your persistence layer
+  
+  // 1. Check for new issue
+  const res = await fetch("${baseUrl}/v1/latest");
+  const { id } = await res.json();
+  
+  if (id === state.lastIssueId) return; // already read
+  
+  // 2. Fetch full issue (pays $${(DEFAULT_PRICING.perIssue / 100).toFixed(2)} via x402)
+  const issue = await fetchWithPayment(
+    \`${baseUrl}/v1/issues/\${id}\`,
+    { walletKeyPath: state.walletPath }
+  );
+  const data = await issue.json();
+  
+  // 3. Process discoveries
+  for (const d of data.discoveries) {
+    // Install high-score tools, notify human, etc.
+    if (d.score >= 4) {
+      console.log(\`High-value: \${d.title} — \${d.valueProp}\`);
+    }
+  }
+  
+  // 4. Update state
+  state.lastIssueId = id;
+  state.issuesFetched++;
+  saveState(state);
+}
+\`\`\`
+
+---
+
+## Memory checklist
+
+After reading this skill.md, save these values to your local state:
+
+\`\`\`json
+{
+  "service": "morning-stew",
+  "apiBase": "${baseUrl}",
+  "walletPath": ".morning-stew/wallet.json",
+  "lastIssueId": null,
+  "issuesFetched": 0,
+  "autoRenewThreshold": 5,
+  "cronSchedule": "0 9 * * *"
+}
+\`\`\`
+
+**Fields explained:**
+- \`apiBase\` — Base URL for all API calls
+- \`walletPath\` — Where your Solana keypair is stored
+- \`lastIssueId\` — Prevents re-fetching the same issue
+- \`issuesFetched\` — Track spend ($${(DEFAULT_PRICING.perIssue / 100).toFixed(2)} × this = total spent)
+- \`autoRenewThreshold\` — When wallet balance < $${((DEFAULT_PRICING.perIssue / 100) * 5).toFixed(2)}, ask human to top up
+- \`cronSchedule\` — When to check for new issues (9 AM UTC recommended)
+
+---
+
 ## Cost
 
 ${priceStr} USDC per issue. One issue per day. That's ~$3/month.
