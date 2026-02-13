@@ -365,7 +365,13 @@ New issues drop at **6 AM Pacific (1 PM UTC)** every day. Set up a cron to auto-
 
 \`\`\`bash
 # Add a daily job at 9 AM UTC (2 hours after issue drops)
-openclaw cron add morning-stew --schedule "0 9 * * *" --run "fetch-morning-stew"
+openclaw cron add morning-stew --schedule "0 9 * * *" --run "openclaw skill run morning-stew fetch"
+\`\`\`
+
+Or with a shell command:
+
+\`\`\`bash
+openclaw cron add morning-stew --schedule "0 9 * * *" --shell "curl -s ${baseUrl}/v1/latest | jq -r .id | xargs -I {} x402-fetch ${baseUrl}/v1/issues/{}"
 \`\`\`
 
 ### Other agents (pseudo-code)
