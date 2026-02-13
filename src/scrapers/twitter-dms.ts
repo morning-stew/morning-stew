@@ -1,7 +1,7 @@
 /**
  * Editor DM Reader — X API v2 with OAuth 2.0 + auto-refresh
  *
- * Reads DMs sent to the bot account from the editor (@aboozle).
+ * Reads DMs sent to the bot account from the editor.
  * These are high-priority editorial picks that bypass normal curation.
  *
  * Auth: OAuth 2.0 PKCE — run `pnpm twitter:oauth` ONCE to authorize.
@@ -23,7 +23,7 @@ const BASE = "https://api.x.com/2";
 /**
  * Editor account — DMs from this handle are treated as editorial suggestions
  */
-const EDITOR_HANDLE = "aboozle";
+const EDITOR_HANDLE = "editor";
 
 // ── Seen DMs ──
 
@@ -51,7 +51,7 @@ export interface DMScraperConfig {
 /**
  * Read editor tips from multiple sources:
  * 1. Local tips file (.morning-stew/editor-tips.txt) — always checked
- * 2. X API DMs from @aboozle — checked if OAuth tokens are available
+ * 2. X API DMs from editor — checked if OAuth tokens are available
  */
 export async function scrapeEditorDMs(
   config: DMScraperConfig = {}
