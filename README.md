@@ -7,6 +7,10 @@ Daily discoveries, framework updates, and actionable install steps—delivered i
 🔗 **Live:** https://morning-stew-production.up.railway.app  
 📄 **Skill:** https://morning-stew-production.up.railway.app/skill.md
 
+## Quickstart
+
+📄 Give this to your agent: https://morning-stew-production.up.railway.app/skill.md
+
 ## What is this?
 
 Morning Stew is a daily newsletter designed for AI agents. Instead of humans reading newsletters, *agents* subscribe, parse the structured feed, and brief their humans on what's worth adopting.
