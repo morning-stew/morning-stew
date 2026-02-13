@@ -4,22 +4,25 @@
 
 Daily discoveries, framework updates, and actionable install steps—delivered in minimal tokens so your agent stays informed without burning context.
 
+🔗 **Live:** https://morning-stew-production.up.railway.app  
+📄 **Skill:** https://morning-stew-production.up.railway.app/skill.md
+
 ## What is this?
 
 Morning Stew is a daily newsletter designed for AI agents. Instead of humans reading newsletters, *agents* subscribe, parse the structured feed, and brief their humans on what's worth adopting.
 
 Each discovery includes:
-- **What** — What is this thing?
-- **Why** — Why should you care?
+- **One-liner** — What is this thing?
+- **Value prop** — Why should you care?
 - **Install** — Exact commands to get started
-- **Impact** — What becomes possible?
+- **Tags** — Filter by category
 
 ## Features
 
-- **Actionable Discoveries** — HackerNews, GitHub trending, with install steps
+- **Actionable Discoveries** — HackerNews, GitHub trending, Twitter, with install steps
 - **Minimal Token Format** — ~500 tokens for the compact version
 - **X402 Payment Gate** — $0.10 USDC per issue on Solana
-- **Creative Issue Names** — Each issue gets a unique ID + witty name
+- **Numbered Issues** — Sequential issue IDs (Issue #0, #1, etc.)
 - **Daily Cron** — Auto-generates at 6 AM PT
 
 ## Quick Start
@@ -28,76 +31,63 @@ Each discovery includes:
 pnpm install
 pnpm generate      # Generate today's newsletter
 pnpm serve         # Start the API server
-pnpm x402:e2e      # Test payment flow
-```
 
-## Deploy to Railway
+API
 
-1. Push to GitHub
-2. Connect to Railway
-3. Set environment variables:
-   - `RECEIVER_ADDRESS` — Your Solana wallet for payments
-   - `USE_TESTNET` — `true` for Solana Devnet, `false` for mainnet
-   - `FACILITATOR_URL` — `https://facilitator.payai.network`
-4. Deploy
-
-For daily automation, add a cron service:
-- **Schedule:** `0 13 * * *` (6 AM PT = 1 PM UTC)
-- **Command:** `npm run cron`
-
-## API
-
-```
 GET /                       # Health check (free)
+GET /skill.md               # Agent onboarding guide (free)
 GET /v1/latest              # Latest issue preview (free)
 GET /v1/issues              # List all issues (free)
 GET /v1/issues/:id          # Full issue (X402 payment required)
-GET /v1/subscribe           # Subscription pricing info
-```
 
-## Discovery Format
+Discovery Format
 
-```json
 {
-  "id": "MS-2026-038",
-  "name": "Solar Paradox",
-  "date": "2026-02-08",
+  "id": "MS-#0",
+  "name": "Issue #0",
+  "date": "2026-02-13",
   "discoveries": [
     {
-      "title": "excalidraw-mcp-app",
-      "category": "integration",
-      "oneLiner": "Hand-drawn diagrams for Claude",
-      "what": "Excalidraw MCP App Server",
-      "why": "862 stars, actively maintained",
-      "impact": "Connect your agent to external systems",
-      "install": {
-        "steps": [
-          "git clone https://github.com/antonpk1/excalidraw-mcp-app.git",
-          "cd excalidraw-mcp-app",
-          "npm install"
-        ]
-      }
+      "title": "team-tasks",
+      "oneLiner": "Multi-agent pipeline coordination: Linear, DAG, and Debate modes",
+      "valueProp": "Adds multi-step workflows to your agent",
+      "install": "pip install needed",
+      "category": "workflow",
+      "tags": ["multi-agent", "workflow"],
+      "score": 4.8,
+      "stars": 159,
+      "url": "https://github.com/win4r/team-tasks"
     }
   ],
   "frameworkUpdates": [...],
   "securityNotes": [...]
 }
-```
 
-## X402 Payment
+X402 Payment
 
-Issues are gated with X402 micropayments:
-- **Per issue:** $0.10 USDC
-- **Network:** Solana (mainnet or devnet)
-- **Facilitator:** [PayAI](https://facilitator.payai.network) — Solana-first, no API keys needed
+Issues are gated with X402 micropayments on Solana:
 
-Agents automatically pay using any x402-compatible Solana client:
+Per issue: $0.10 USDC
+Network: Solana mainnet
+Facilitator: PayAI — covers gas fees
 
-```typescript
-// Any x402 client that supports Solana can pay for issues
-const response = await x402Fetch("https://morning-stew.up.railway.app/v1/issues/MS-2026-038");
-```
+See /skill.md for full payment instructions including transaction construction.
 
-## License
+Deploy Your Own
+
+Push to GitHub
+Connect to Railway
+Set environment variables:
+RECEIVER_ADDRESS — Your Solana wallet for payments
+INTERNAL_SECRET — Secret for triggering generation
+FACILITATOR_URL — https://facilitator.payai.network
+Deploy
+
+Trigger generation:
+
+curl -X POST https://your-app.up.railway.app/internal/generate \
+  -H "Authorization: Bearer YOUR_INTERNAL_SECRET"
+
+License
 
 MIT
