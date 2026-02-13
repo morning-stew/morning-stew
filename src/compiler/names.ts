@@ -1,93 +1,39 @@
 /**
- * Generate creative newsletter names in the style of crossword puzzle titles.
- * Witty, memorable, and not slop.
+ * Generate newsletter IDs and names.
+ * Simple numbered format: Issue #0, #1, #2...
  */
 
-const ADJECTIVES = [
-  "Lobster's",
-  "Claw's",
-  "Shell's",
-  "Crimson",
-  "Deep",
-  "Midnight",
-  "Electric",
-  "Quantum",
-  "Silent",
-  "Swift",
-  "Iron",
-  "Crystal",
-  "Ember",
-  "Frost",
-  "Velvet",
-  "Neon",
-  "Copper",
-  "Phantom",
-  "Solar",
-  "Lunar",
-];
-
-const NOUNS = [
-  "Gambit",
-  "Paradox",
-  "Echo",
-  "Cipher",
-  "Protocol",
-  "Vector",
-  "Signal",
-  "Theorem",
-  "Axiom",
-  "Drift",
-  "Pulse",
-  "Surge",
-  "Breach",
-  "Summit",
-  "Vault",
-  "Spiral",
-  "Nexus",
-  "Forge",
-  "Bloom",
-  "Tide",
-];
-
-// For special occasions
-const SPECIAL_NAMES: Record<string, string> = {
-  "01-01": "Fresh Molt",
-  "02-14": "Claw & Heart",
-  "10-31": "Spectral Shell",
-  "12-25": "Frost Pincer",
-};
+import { existsSync, readdirSync } from "fs";
+import { join } from "path";
 
 /**
- * Generate a deterministic but varied name for a given date.
+ * Get the next issue number by counting existing issues.
  */
-export function generateName(date: Date): string {
-  const monthDay = `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+function getNextIssueNumber(): number {
+  const issuesDir = join(process.cwd(), ".morning-stew", "issues");
   
-  // Check for special dates
-  if (SPECIAL_NAMES[monthDay]) {
-    return SPECIAL_NAMES[monthDay];
+  if (!existsSync(issuesDir)) return 0;
+  
+  try {
+    const files = readdirSync(issuesDir).filter(f => f.endsWith(".json") && !f.includes(".full."));
+    return files.length;
+  } catch {
+    return 0;
   }
-
-  // Use date as seed for deterministic selection
-  const dayOfYear = Math.floor(
-    (date.getTime() - new Date(date.getFullYear(), 0, 0).getTime()) /
-      (1000 * 60 * 60 * 24)
-  );
-
-  const adjIndex = dayOfYear % ADJECTIVES.length;
-  const nounIndex = Math.floor(dayOfYear / ADJECTIVES.length) % NOUNS.length;
-
-  return `${ADJECTIVES[adjIndex]} ${NOUNS[nounIndex]}`;
 }
 
 /**
- * Generate newsletter ID in format MS-YYYY-DDD
- * where DDD is day of year (001-366)
+ * Generate newsletter ID in format MS-#N (e.g., MS-#0, MS-#1)
  */
-export function generateId(date: Date): string {
-  const year = date.getFullYear();
-  const dayOfYear = Math.floor(
-    (date.getTime() - new Date(year, 0, 0).getTime()) / (1000 * 60 * 60 * 24)
-  );
-  return `MS-${year}-${String(dayOfYear).padStart(3, "0")}`;
+export function generateId(_date: Date): string {
+  const issueNumber = getNextIssueNumber();
+  return `MS-#${issueNumber}`;
+}
+
+/**
+ * Generate newsletter name: "Issue #N"
+ */
+export function generateName(_date: Date): string {
+  const issueNumber = getNextIssueNumber();
+  return `Issue #${issueNumber}`;
 }
