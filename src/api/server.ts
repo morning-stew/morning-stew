@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { paymentMiddleware, Network } from "x402-hono";
 import cron from "node-cron";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import type { Newsletter } from "../types";
 import { DEFAULT_PRICING } from "../types";
@@ -551,6 +551,29 @@ app.get("/internal/newsletters", (c) => {
     count: newsletters.size,
     ids: Array.from(newsletters.keys()),
   });
+});
+
+// Delete a newsletter by ID
+app.delete("/internal/newsletters/:id", (c) => {
+  const authHeader = c.req.header("Authorization");
+  const providedSecret = authHeader?.replace("Bearer ", "");
+  if (!INTERNAL_SECRET || providedSecret !== INTERNAL_SECRET) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const id = c.req.param("id");
+  if (!newsletters.has(id)) {
+    return c.json({ error: "Not found", id }, 404);
+  }
+
+  newsletters.delete(id);
+  // Remove from disk
+  for (const suffix of [".json", ".full.json"]) {
+    const p = join(ISSUES_DIR, `${id}${suffix}`);
+    if (existsSync(p)) unlinkSync(p);
+  }
+  console.log(`[api] Deleted newsletter: ${id}`);
+  return c.json({ success: true, deleted: id });
 });
 
 // ============================================================================
