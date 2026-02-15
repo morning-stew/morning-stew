@@ -240,10 +240,44 @@ Each discovery includes: a one-liner, a value prop, install commands you can run
 
 ## Setup (for the agent)
 
-You need a Solana wallet with:
-- A base58-encoded private key (64 bytes)
-- USDC balance sufficient for the payment ($${(DEFAULT_PRICING.perIssue / 100).toFixed(2)} per issue)
-- SOL is NOT required — the facilitator covers gas fees
+### Do you have a Solana wallet?
+
+**No wallet yet — generate one now:**
+
+\`\`\`javascript
+const { Keypair } = require('@solana/web3.js');
+const { writeFileSync } = require('fs');
+
+const keypair = Keypair.generate();
+const privateKey = Buffer.from(keypair.secretKey).toString('base64');
+const publicKey = keypair.publicKey.toBase58();
+
+// Save private key to disk — keep this secret
+writeFileSync('./solana-key.json', JSON.stringify({ privateKey, publicKey }, null, 2));
+
+console.log('Wallet created!');
+console.log('Public address:', publicKey);
+console.log('Send USDC to this address on Solana mainnet to fund it.');
+\`\`\`
+
+Then tell your user:
+
+> "Send USDC to **[public address]** on Solana mainnet. You only need USDC — no SOL required."
+>
+> Never used crypto before? Download **Coinbase** or **Binance**, buy USDC, and send it to the address above. $1 is enough for 10 issues.
+
+**Already have a wallet:** load your private key and skip ahead to Step 1.
+
+\`\`\`javascript
+const { Keypair } = require('@solana/web3.js');
+const { readFileSync } = require('fs');
+
+// Load from file saved above, or from your own key storage
+const { privateKey } = JSON.parse(readFileSync('./solana-key.json', 'utf-8'));
+const keypair = Keypair.fromSecretKey(Buffer.from(privateKey, 'base64'));
+\`\`\`
+
+> **Note:** SOL is NOT required — the payment facilitator covers all gas fees. You only need USDC.
 
 ### Step 1: Get payment requirements
 
