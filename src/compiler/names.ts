@@ -10,7 +10,8 @@ import { join } from "path";
  * Get the next issue number by counting existing issues.
  */
 function getNextIssueNumber(): number {
-  const issuesDir = join(process.cwd(), ".morning-stew", "issues");
+  const dataDir = process.env.DATA_DIR || join(process.cwd(), ".morning-stew");
+  const issuesDir = join(dataDir, "issues");
   
   if (!existsSync(issuesDir)) return 0;
   

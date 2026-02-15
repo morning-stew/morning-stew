@@ -30,7 +30,7 @@ const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://facilitator.paya
 // Newsletter persistence — file-based store (survives process restarts)
 // ============================================================================
 
-const DATA_DIR = join(process.cwd(), ".morning-stew");
+const DATA_DIR = process.env.DATA_DIR || join(process.cwd(), ".morning-stew");
 const ISSUES_DIR = join(DATA_DIR, "issues");
 
 function ensureDataDirs() {
@@ -190,6 +190,7 @@ app.get("/.well-known/x402.json", (c) => {
     freeEndpoints: [
       { path: "/v1/latest", method: "GET", description: "Latest issue preview" },
       { path: "/v1/issues", method: "GET", description: "List all issues" },
+      { path: "/v1/issues/free", method: "GET", description: "Free edition (Issue #0) — full content, no payment required" },
       { path: "/skill.md", method: "GET", description: "Onboarding guide" },
     ],
     usage: {
@@ -231,7 +232,7 @@ Morning Stew scans Twitter, HackerNews, GitHub Trending, and other sources every
 - **Novel** — not a clone of something that already exists
 - **Active** — has recent commits and real engagement
 
-...make it into the newsletter. Each issue has 3-6 discoveries.
+...make it into the newsletter. Each issue has exactly 6 discoveries.
 
 Each discovery includes: a one-liner, a value prop, install commands you can run directly, tags for filtering, a quality score, and a source URL.
 
@@ -349,9 +350,9 @@ Requires an X402 payment header. Your x402 client handles this automatically.
 
 \`\`\`json
 {
-  "id": "MS-2026-043",
-  "name": "Crimson Echo",
-  "date": "2026-02-12",
+  "id": "MS-#3",
+  "name": "Issue #3",
+  "date": "2026-02-15",
   "discoveries": [
     {
       "title": "Model Hierarchy Skill",
@@ -376,12 +377,25 @@ Key fields:
 
 ---
 
+## Free Edition
+
+Issue #0 is available for free — no payment, no wallet required:
+
+\`\`\`
+GET ${baseUrl}/v1/issues/free
+\`\`\`
+
+Returns the full Issue #0 content in the same JSON format as paid issues.
+
+---
+
 ## Endpoints
 
 | Endpoint | Cost | What it does |
 |----------|------|--------------|
 | \`GET /v1/latest\` | Free | Latest issue ID + discovery count |
 | \`GET /v1/issues\` | Free | List all available issues |
+| \`GET /v1/issues/free\` | Free | Issue #0 — full content, no payment |
 | \`GET /v1/issues/{id}\` | ${priceStr} USDC | Full issue with discoveries |
 | \`GET /skill.md\` | Free | This document |
 
@@ -486,6 +500,16 @@ app.get("/v1/issues", (c) => {
   });
 });
 
+// Free issue — no payment required (Issue #0 = MS-#0)
+app.get("/v1/issues/free", (c) => {
+  // Find the free issue: the one with id "MS-#0"
+  const freeIssue = newsletters.get("MS-#0");
+  if (!freeIssue) {
+    return c.json({ error: "Free issue not yet available" }, 404);
+  }
+  return c.json(toLeanNewsletter(freeIssue));
+});
+
 // X402 payment middleware — PayAI facilitator for Solana
 app.use(
   paymentMiddleware(
@@ -574,6 +598,32 @@ app.delete("/internal/newsletters/:id", (c) => {
   }
   console.log(`[api] Deleted newsletter: ${id}`);
   return c.json({ success: true, deleted: id });
+});
+
+// Edit any field of a newsletter (remote build authority)
+app.patch("/internal/newsletters/:id", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  const providedSecret = authHeader?.replace("Bearer ", "");
+  if (!INTERNAL_SECRET || providedSecret !== INTERNAL_SECRET) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const id = c.req.param("id");
+  const existing = newsletters.get(id);
+  if (!existing) {
+    return c.json({ error: "Not found", id }, 404);
+  }
+
+  const updates = await c.req.json<Partial<Newsletter>>();
+
+  // Merge updates into existing newsletter (only provided fields)
+  const updated: Newsletter = { ...existing, ...updates, id }; // id is immutable
+
+  newsletters.set(id, updated);
+  saveNewsletterToDisk(updated);
+
+  console.log(`[api] Updated newsletter: ${id} — fields: ${Object.keys(updates).join(", ")}`);
+  return c.json({ success: true, id, updated: Object.keys(updates) });
 });
 
 // ============================================================================
@@ -752,7 +802,8 @@ Endpoints:
    GET  /v1/issues/:id          Full issue ($0.10 USDC)
    GET  /v1/editor/tip          Submit tip (form)
    POST /v1/editor/tip          Submit tip (JSON)
-   POST /internal/generate      Trigger generation
+   POST /internal/generate         Trigger generation
+   PATCH /internal/newsletters/:id Edit any newsletter field
 `);
 
 serve({

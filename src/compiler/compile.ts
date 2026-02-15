@@ -16,11 +16,52 @@ import { judgeBatch, isJudgeAvailable, type JudgeInput, type JudgeVerdict } from
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 
+// ── Thinking log types ──
+
+interface ThinkingLogEntry {
+  title: string;
+  url?: string;
+  source: string;
+  phase: string;
+  decision: "included" | "excluded" | "pending";
+  reason?: string;
+  llmVerdict?: {
+    actionable: boolean;
+    confidence?: number;
+    skipReason?: string;
+    scores?: Record<string, number>;
+    failedCriteria?: string[];
+  };
+  curationScore?: number;
+}
+
+interface ThinkingLog {
+  newsletterId: string;
+  date: string;
+  generatedAt: string;
+  summary: {
+    totalCandidates: number;
+    llmJudgedCount: number;
+    llmPassedCount: number;
+    curatedCount: number;
+    finalPicks: number;
+    onRadarCount: number;
+    skippedCount: number;
+  };
+  candidates: ThinkingLogEntry[];
+}
+
 /**
  * Hard cap: max discoveries in a newsletter.
  * Editor tips always get a slot. Remaining slots filled by best of timeline/HN/GH/search.
  */
 const MAX_PICKS = 6;
+
+/**
+ * Minimum discoveries required to publish a newsletter.
+ * If fewer than this pass curation, the generation is scrapped.
+ */
+const MIN_PICKS = 6;
 
 export interface CompileOptions {
   date?: Date;
@@ -32,6 +73,8 @@ export interface CompileOptions {
   skipEditorDMs?: boolean;     // Skip checking editor tips
   skipCuration?: boolean;      // Skip quality filtering (for testing)
   maxPicks?: number;           // Override MAX_PICKS (default: 6)
+  overrideId?: string;         // Force a specific newsletter ID (e.g. "MS-#0" for seed)
+  skipMinimumCheck?: boolean;  // Skip the minimum picks enforcement (seed/backfill use only)
 }
 
 /**
@@ -53,6 +96,15 @@ export async function compileNewsletter(
   const maxPicks = options.maxPicks || MAX_PICKS;
 
   console.log(`[compile] Generating newsletter for ${dateStr} (max ${maxPicks} picks)`);
+
+  // Initialize thinking log
+  const thinkingLog: ThinkingLog = {
+    newsletterId: "",  // filled in at the end
+    date: dateStr,
+    generatedAt: new Date().toISOString(),
+    summary: { totalCandidates: 0, llmJudgedCount: 0, llmPassedCount: 0, curatedCount: 0, finalPicks: 0, onRadarCount: 0, skippedCount: 0 },
+    candidates: [],
+  };
 
   // Reset Twitter API spend tracker — $0.75 hard cap per generation
   resetTwitterBudget(0.75);
@@ -156,6 +208,8 @@ export async function compileNewsletter(
     const verdicts = await judgeBatch(inputs, 5);
     const passed: Discovery[] = [];
 
+    thinkingLog.summary.llmJudgedCount += needsJudging.length;
+
     for (let i = 0; i < needsJudging.length; i++) {
       const d = needsJudging[i];
       const v = verdicts[i];
@@ -171,17 +225,23 @@ export async function compileNewsletter(
             why: v.valueProp || d.why,
             impact: v.valueProp || d.impact,
           });
+          thinkingLog.candidates.push({ title: v.title || d.title, url: d.source.url, source: d.source.type, phase: "llm-judge", decision: "pending", llmVerdict: { actionable: true, confidence: v.confidence, scores: s as any } });
         } else {
-          const failedCriteria = Object.entries(s).filter(([, score]) => score < 0.5).map(([k]) => k).join(", ");
+          const failedKeys = Object.entries(s!).filter(([, score]) => score < 0.5).map(([k]) => k);
+          const failedCriteria = failedKeys.join(", ");
           console.log(`[compile]   SKIP (score fail): "${d.title.slice(0, 50)}..." → failed: ${failedCriteria}`);
+          thinkingLog.candidates.push({ title: d.title, url: d.source.url, source: d.source.type, phase: "llm-judge", decision: "excluded", reason: `Failed LLM criteria: ${failedCriteria}`, llmVerdict: { actionable: true, confidence: v.confidence, scores: s as any, failedCriteria: failedKeys } });
         }
       } else if (v && !v.actionable) {
         console.log(`[compile]   SKIP: "${d.title.slice(0, 50)}..." → ${v.skipReason || "Not actionable"}`);
+        thinkingLog.candidates.push({ title: d.title, url: d.source.url, source: d.source.type, phase: "llm-judge", decision: "excluded", reason: v.skipReason || "Not actionable", llmVerdict: { actionable: false, confidence: v.confidence, skipReason: v.skipReason } });
       } else {
         passed.push(d);
+        thinkingLog.candidates.push({ title: d.title, url: d.source.url, source: d.source.type, phase: "llm-judge", decision: "pending", reason: "No verdict — passed through" });
       }
     }
 
+    thinkingLog.summary.llmPassedCount += passed.length;
     console.log(`[compile] LLM judge: ${passed.length}/${needsJudging.length} passed`);
     judgedAll = [...preJudged, ...passed];
   }
@@ -248,6 +308,23 @@ export async function compileNewsletter(
       url: d.source.url,
       reason: d.skipReason || "Did not meet quality threshold",
     }));
+
+    // Log curation decisions
+    for (const d of curation.picks) {
+      const existing = thinkingLog.candidates.find(c => c.url === d.source.url);
+      if (existing) { existing.decision = "included"; existing.phase = "curation"; existing.curationScore = d.qualityScore.total; }
+      else thinkingLog.candidates.push({ title: d.title, url: d.source.url, source: d.source.type, phase: "curation", decision: "included", curationScore: d.qualityScore.total });
+    }
+    for (const d of curation.onRadar) {
+      const existing = thinkingLog.candidates.find(c => c.url === d.source.url);
+      if (existing) { existing.decision = "excluded"; existing.reason = d.skipReason || "On radar — needs more traction"; existing.curationScore = d.qualityScore.total; }
+      else thinkingLog.candidates.push({ title: d.title, url: d.source.url, source: d.source.type, phase: "curation", decision: "excluded", reason: d.skipReason || "On radar — needs more traction", curationScore: d.qualityScore.total });
+    }
+    for (const d of curation.skipped) {
+      const existing = thinkingLog.candidates.find(c => c.url === d.source.url);
+      if (existing) { existing.decision = "excluded"; existing.reason = d.skipReason || "Below quality threshold"; existing.curationScore = d.qualityScore.total; }
+      else thinkingLog.candidates.push({ title: d.title, url: d.source.url, source: d.source.type, phase: "curation", decision: "excluded", reason: d.skipReason || "Below quality threshold", curationScore: d.qualityScore.total });
+    }
   }
 
   // Ensure editor picks are always included (they outrank everything)
@@ -268,11 +345,18 @@ export async function compileNewsletter(
     picks = [...forcedPicks, ...editorInPicks, ...nonEditorPicks].slice(0, maxPicks);
   }
 
+  // Enforce minimum picks — scrap the newsletter if quality bar isn't met
+  if (!options.skipCuration && !options.skipMinimumCheck && picks.length < MIN_PICKS) {
+    throw new Error(
+      `[compile] Insufficient quality content: only ${picks.length}/${MIN_PICKS} picks found. Newsletter scrapped.`
+    );
+  }
+
   const securityNotes = generateSecuritySummary(picks);
 
   const newsletter: Newsletter = {
-    id: generateId(date),
-    name: generateName(date),
+    id: options.overrideId || generateId(date),
+    name: options.overrideId ? `Issue #${options.overrideId.replace("MS-#", "")}` : generateName(date),
     date: dateStr,
     discoveries: picks,
     onRadar: onRadar.length > 0 ? onRadar : undefined,
@@ -298,7 +382,32 @@ export async function compileNewsletter(
   const leanTokens = Math.ceil(JSON.stringify(lean).length / 4);
   console.log(`[compile] Lean output: ~${leanTokens} tokens (vs ${newsletter.tokenCount} full)`);
 
+  // Finalize and save thinking log
+  thinkingLog.newsletterId = newsletter.id;
+  thinkingLog.summary.totalCandidates = thinkingLog.candidates.length;
+  thinkingLog.summary.finalPicks = picks.length;
+  thinkingLog.summary.onRadarCount = onRadar.length;
+  thinkingLog.summary.skippedCount = skipped.length;
+  thinkingLog.summary.curatedCount = picks.length + onRadar.length + skipped.length;
+  saveThinkingLog(thinkingLog);
+
   return newsletter;
+}
+
+// ── Thinking log persistence ──
+
+function saveThinkingLog(log: ThinkingLog): void {
+  try {
+    const dataDir = process.env.DATA_DIR || join(process.cwd(), ".morning-stew");
+    const logsDir = join(dataDir, "thinking-logs");
+    if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
+    const safeId = log.newsletterId.replace(/[^a-zA-Z0-9#-]/g, "_");
+    const filePath = join(logsDir, `${safeId}.json`);
+    writeFileSync(filePath, JSON.stringify(log, null, 2));
+    console.log(`[compile] Thinking log saved: ${filePath}`);
+  } catch (err) {
+    console.error(`[compile] Failed to save thinking log:`, err);
+  }
 }
 
 // ── Search queries ranked by value ──
@@ -313,7 +422,8 @@ function getTopQueries(count: number): string[] {
 
 function loadHistoricalKeys(lookbackCount = 10): Set<string> {
   const keys = new Set<string>();
-  const issuesDir = join(process.cwd(), ".morning-stew", "issues");
+  const dataDir = process.env.DATA_DIR || join(process.cwd(), ".morning-stew");
+  const issuesDir = join(dataDir, "issues");
 
   if (!existsSync(issuesDir)) return keys;
 
