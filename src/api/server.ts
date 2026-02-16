@@ -5,7 +5,7 @@ import { paymentMiddleware } from "@x402/hono";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
 import { registerExactSvmScheme } from "@x402/svm/exact/server";
 import { SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2 } from "@x402/svm";
-import { registerExactEvmScheme } from "@x402/evm/exact/server";
+import { ExactEvmScheme } from "@x402/evm/exact/server";
 import cron from "node-cron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
@@ -35,15 +35,28 @@ const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL as `$
 const x402Server = new x402ResourceServer(facilitatorClient);
 registerExactSvmScheme(x402Server);
 
-// x402 v2 — Monad server (OpenX402 facilitator)
+// x402 v2 — Monad server (molandak facilitator)
 const MONAD_RECEIVER_ADDRESS = process.env.MONAD_RECEIVER_ADDRESS || "";
-const MONAD_FACILITATOR_URL = process.env.MONAD_FACILITATOR_URL || "https://facilitator.openx402.ai";
+const MONAD_FACILITATOR_URL = process.env.MONAD_FACILITATOR_URL || "https://x402-facilitator.molandak.org";
 const MONAD_NETWORK = "eip155:143"; // Monad mainnet
 const MONAD_USDC = "0x754704Bc059F8C67012fEd69BC8A327a5aafb603";
 
 const monadFacilitatorClient = new HTTPFacilitatorClient({ url: MONAD_FACILITATOR_URL as `${string}://${string}` });
 const monadServer = new x402ResourceServer(monadFacilitatorClient);
-registerExactEvmScheme(monadServer);
+
+// Register Monad scheme with custom money parser so it knows the USDC token address
+const monadScheme = new ExactEvmScheme();
+monadScheme.registerMoneyParser(async (amount: number, network: string) => {
+  if (network === MONAD_NETWORK) {
+    return {
+      amount: Math.floor(amount * 1_000_000).toString(),
+      asset: MONAD_USDC,
+      extra: { name: "USDC", version: "2" },
+    };
+  }
+  return null;
+});
+monadServer.register(MONAD_NETWORK, monadScheme);
 
 // ============================================================================
 // Newsletter persistence — file-based store (survives process restarts)
