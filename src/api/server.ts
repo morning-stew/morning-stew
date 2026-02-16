@@ -937,9 +937,12 @@ console.log(`
 Morning Stew API Server
 
    URL:        http://localhost:${port}
-   Network:    ${NETWORK}
-   Receiver:   ${RECEIVER_ADDRESS}
-   Facilitator: ${FACILITATOR_URL} (PayAI)
+   Solana Network:  ${NETWORK}
+   Solana Receiver: ${RECEIVER_ADDRESS}
+   Solana Facilitator: ${FACILITATOR_URL} (PayAI)
+   Monad Network:   ${MONAD_NETWORK}
+   Monad Receiver:  ${MONAD_RECEIVER_ADDRESS || "NOT SET"}
+   Monad Facilitator: ${MONAD_FACILITATOR_URL} (OpenX402)
    Cron:       ${ENABLE_CRON ? CRON_SCHEDULE + " UTC (6 AM PT)" : "DISABLED"}
 
 Endpoints:
