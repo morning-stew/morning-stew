@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { paymentMiddleware } from "@x402/hono";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
-import { ExactSvmScheme } from "@x402/svm/exact/server";
+import { registerExactSvmScheme } from "@x402/svm/exact/server";
 import { SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2 } from "@x402/svm";
 import cron from "node-cron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
@@ -29,11 +29,10 @@ const NETWORK = USE_TESTNET ? SOLANA_DEVNET_CAIP2 : SOLANA_MAINNET_CAIP2;
 // PayAI facilitator — Solana-first, no API keys needed
 const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://facilitator.payai.network";
 
-// x402 v2 resource server
+// x402 v2 resource server — registers solana:* wildcard (covers mainnet + devnet)
 const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL as `${string}://${string}` });
 const x402Server = new x402ResourceServer(facilitatorClient);
-x402Server.register(SOLANA_MAINNET_CAIP2, new ExactSvmScheme());
-x402Server.register(SOLANA_DEVNET_CAIP2, new ExactSvmScheme());
+registerExactSvmScheme(x402Server);
 
 // ============================================================================
 // Newsletter persistence — file-based store (survives process restarts)
