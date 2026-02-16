@@ -1,14 +1,17 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
-import { paymentMiddleware, Network } from "x402-hono";
+import { paymentMiddleware } from "@x402/hono";
+import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
+import { ExactSvmScheme } from "@x402/svm/exact/server";
+import { SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2 } from "@x402/svm";
 import cron from "node-cron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import type { Newsletter } from "../types";
 import { DEFAULT_PRICING } from "../types";
 import { toLeanNewsletter } from "../types/newsletter";
-import { NETWORKS, centsToPriceString } from "../payment/x402";
+import { centsToPriceString } from "../payment/x402";
 import { compileNewsletter } from "../compiler/compile";
 
 /**
@@ -21,10 +24,16 @@ import { compileNewsletter } from "../compiler/compile";
 // Config from environment
 const RECEIVER_ADDRESS = process.env.RECEIVER_ADDRESS || "";
 const USE_TESTNET = process.env.USE_TESTNET !== "false";
-const NETWORK = (USE_TESTNET ? NETWORKS.SOLANA_DEVNET : NETWORKS.SOLANA_MAINNET) as Network;
+const NETWORK = USE_TESTNET ? SOLANA_DEVNET_CAIP2 : SOLANA_MAINNET_CAIP2;
 
 // PayAI facilitator — Solana-first, no API keys needed
 const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://facilitator.payai.network";
+
+// x402 v2 resource server
+const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL as `${string}://${string}` });
+const x402Server = new x402ResourceServer(facilitatorClient);
+x402Server.register(SOLANA_MAINNET_CAIP2, new ExactSvmScheme());
+x402Server.register(SOLANA_DEVNET_CAIP2, new ExactSvmScheme());
 
 // ============================================================================
 // Newsletter persistence — file-based store (survives process restarts)
@@ -164,7 +173,7 @@ app.get("/.well-known/x402.json", (c) => {
   const baseUrl = c.req.url.replace("/.well-known/x402.json", "");
   
   return c.json({
-    x402Version: 2,
+    x402Version: 2, // protocol version
     service: {
       name: "Morning Stew",
       description: "Daily AI agent newsletter — curated tools and frameworks with install commands. Optimized for machine consumption.",
@@ -333,20 +342,20 @@ tx.partialSign(keypair);
 const serialized = tx.serialize({ requireAllSignatures: false }).toString('base64');
 
 const payload = {
-  x402Version: 1,
+  x402Version: 2,
   scheme: 'exact',
-  network: 'solana',
+  network: '${NETWORK}',
   payload: { transaction: serialized }
 };
 
-const xPaymentHeader = Buffer.from(JSON.stringify(payload)).toString('base64');
+const paymentSignature = Buffer.from(JSON.stringify(payload)).toString('base64');
 \`\`\`
 
 ### Step 4: Retry with payment
 
 \`\`\`javascript
 const response = await fetch('${baseUrl}/v1/issues/${latestId}', {
-  headers: { 'X-PAYMENT': xPaymentHeader }
+  headers: { 'PAYMENT-SIGNATURE': paymentSignature }
 });
 
 const newsletter = await response.json();
@@ -544,22 +553,24 @@ app.get("/v1/issues/free", (c) => {
   return c.json(toLeanNewsletter(freeIssue));
 });
 
-// X402 payment middleware — PayAI facilitator for Solana
+// X402 v2 payment middleware — PayAI facilitator for Solana
 app.use(
   paymentMiddleware(
-    RECEIVER_ADDRESS as `0x${string}`,
     {
-      "/v1/issues/[id]": {
-        price: centsToPriceString(DEFAULT_PRICING.perIssue),
-        network: NETWORK,
-        config: {
-          description: "Morning Stew newsletter issue",
-        },
+      "/v1/issues/:id": {
+        accepts: [
+          {
+            scheme: "exact",
+            network: NETWORK,
+            payTo: RECEIVER_ADDRESS,
+            price: centsToPriceString(DEFAULT_PRICING.perIssue),
+          },
+        ],
+        description: "Morning Stew newsletter issue",
+        mimeType: "application/json",
       },
     },
-    {
-      url: FACILITATOR_URL as `${string}://${string}`,
-    },
+    x402Server,
   )
 );
 

@@ -10,10 +10,10 @@ import { DEFAULT_PRICING } from "../types";
  * Docs: https://docs.payai.network
  */
 
-// Network identifiers (PayAI facilitator format)
+// Network identifiers — CAIP-2 format (x402 v2)
 export const NETWORKS = {
-  SOLANA_MAINNET: "solana",
-  SOLANA_DEVNET: "solana-devnet",
+  SOLANA_MAINNET: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+  SOLANA_DEVNET: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
 } as const;
 
 export type Network = (typeof NETWORKS)[keyof typeof NETWORKS];

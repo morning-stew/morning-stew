@@ -6,21 +6,20 @@
  * Usage: pnpm tsx src/cli/buy-issue.ts [issue-id]
  */
 
-import { Keypair, VersionedTransaction } from "@solana/web3.js";
+import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { createX402Client } from "x402-solana/client";
+import { x402Client, wrapFetchWithPayment } from "@x402/fetch";
+import { registerExactSvmScheme } from "@x402/svm/exact/client";
 
 const API_BASE = process.env.API_URL || "https://morning-stew-production.up.railway.app";
 const KEYPAIR_PATH = join(process.env.HOME!, ".config/solana/id.json");
 
 async function main() {
-  // Load keypair
   const secret = JSON.parse(readFileSync(KEYPAIR_PATH, "utf-8"));
-  const keypair = Keypair.fromSecretKey(Uint8Array.from(secret));
-  console.log(`Wallet: ${keypair.publicKey.toBase58()}`);
+  const signer = await createKeyPairSignerFromBytes(Uint8Array.from(secret));
+  console.log(`Wallet: ${signer.address}`);
 
-  // Determine issue ID
   let issueId = process.argv[2];
   if (!issueId) {
     const latest = await fetch(`${API_BASE}/v1/latest`).then(r => r.json());
@@ -28,25 +27,13 @@ async function main() {
     console.log(`Latest issue: ${issueId} (${latest.name})`);
   }
 
-  // Create x402 client with keypair-based wallet adapter
-  const wallet = {
-    publicKey: keypair.publicKey,
-    signTransaction: async (tx: VersionedTransaction) => {
-      tx.sign([keypair]);
-      return tx;
-    },
-  };
-
-  const client = createX402Client({
-    wallet,
-    network: "solana",
-    rpcUrl: "https://api.mainnet-beta.solana.com",
-    verbose: true,
-  });
+  const client = new x402Client();
+  registerExactSvmScheme(client, { signer });
+  const payFetch = wrapFetchWithPayment(fetch, client);
 
   console.log(`\nBuying ${issueId} for $0.10 USDC...\n`);
 
-  const res = await client.fetch(`${API_BASE}/v1/issues/${issueId}`);
+  const res = await payFetch(`${API_BASE}/v1/issues/${issueId}`);
 
   if (!res.ok) {
     const err = await res.text();
