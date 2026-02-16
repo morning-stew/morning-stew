@@ -5,7 +5,7 @@ import { paymentMiddleware } from "@x402/hono";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
 import { registerExactSvmScheme } from "@x402/svm/exact/server";
 import { SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2 } from "@x402/svm";
-import { ExactEvmScheme } from "@x402/evm/exact/server";
+// ExactEvmScheme not needed — Monad uses manual facilitator flow
 import cron from "node-cron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
@@ -35,36 +35,11 @@ const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL as `$
 const x402Server = new x402ResourceServer(facilitatorClient);
 registerExactSvmScheme(x402Server);
 
-// x402 v2 — Monad server (molandak facilitator)
+// Monad config — manual facilitator flow (not using @x402/hono middleware)
 const MONAD_RECEIVER_ADDRESS = process.env.MONAD_RECEIVER_ADDRESS || "";
 const MONAD_FACILITATOR_URL = process.env.MONAD_FACILITATOR_URL || "https://x402-facilitator.molandak.org";
 const MONAD_NETWORK = "eip155:143"; // Monad mainnet
 const MONAD_USDC = "0x754704Bc059F8C67012fEd69BC8A327a5aafb603";
-
-const monadFacilitatorClient = new HTTPFacilitatorClient({ url: MONAD_FACILITATOR_URL as `${string}://${string}` });
-const monadServer = new x402ResourceServer(monadFacilitatorClient);
-
-// Register Monad scheme with custom money parser so it knows the USDC token address
-const monadScheme = new ExactEvmScheme();
-monadScheme.registerMoneyParser(async (amount: number, network: string) => {
-  if (network === MONAD_NETWORK) {
-    return {
-      amount: Math.floor(amount * 1_000_000).toString(),
-      asset: MONAD_USDC,
-      extra: { name: "USDC", version: "2" },
-    };
-  }
-  return null;
-});
-monadServer.register(MONAD_NETWORK, monadScheme);
-
-// Debug hooks for Monad settlement
-monadServer.onAfterSettle(async (ctx) => {
-  console.log("[monad] Settlement succeeded:", JSON.stringify(ctx.result, null, 2));
-});
-monadServer.onSettleFailure(async (ctx) => {
-  console.error("[monad] Settlement FAILED:", JSON.stringify(ctx.error, null, 2));
-});
 
 // ============================================================================
 // Newsletter persistence — file-based store (survives process restarts)
@@ -374,7 +349,7 @@ const newsletter = await response.json();
 
 **Endpoint:** \`GET /v1/issues/monad/{id}\`
 **Network:** Monad mainnet (\`eip155:143\`) — 10,000 TPS, ~0.4s finality
-**Facilitator:** OpenX402 — gasless via EIP-3009 transferWithAuthorization
+**Facilitator:** molandak — gasless via EIP-3009 transferWithAuthorization
 
 ### Wallet setup
 
@@ -392,7 +367,7 @@ writeFileSync('./monad-key.json', JSON.stringify({
 console.log('Send USDC to:', wallet.address);
 \`\`\`
 
-> Send Monad USDC (\`0x754704Bc059F8C67012fEd69BC8A327a5aafb603\`) to that address. No MONAD token needed for gas.
+> Fund your wallet: Buy USDC on Coinbase, send it to your Monad address via Phantom wallet. No MONAD token needed for gas — the facilitator covers it.
 
 **Already have a wallet:**
 
@@ -408,16 +383,18 @@ const wallet = new ethers.Wallet(privateKey);
 curl -s ${baseUrl}/v1/issues/monad/${latestId}
 \`\`\`
 
-Returns 402. Extract: \`amount\`, \`asset\` (USDC contract), \`payTo\`, \`extra.name\`, \`extra.version\`.
+Returns 402 JSON. Extract: \`accepts[0].payTo\`, \`accepts[0].asset\`, \`accepts[0].price\`, \`accepts[0].extra\`, \`facilitator\`.
 
 ### Step 2: Sign EIP-3009 authorization
 
 \`\`\`javascript
 const now = Math.floor(Date.now() / 1000);
 const nonce = ethers.hexlify(ethers.randomBytes(32));
+// Convert price "$0.10" → 100000 (6 decimals)
+const value = '100000';
 
-const domain = { name: extra.name, version: extra.version, chainId: 143,
-  verifyingContract: asset };
+const domain = { name: 'USDC', version: '2', chainId: 143,
+  verifyingContract: '${MONAD_USDC}' };
 
 const types = { TransferWithAuthorization: [
   { name: 'from', type: 'address' }, { name: 'to', type: 'address' },
@@ -425,27 +402,48 @@ const types = { TransferWithAuthorization: [
   { name: 'validBefore', type: 'uint256' }, { name: 'nonce', type: 'bytes32' }
 ]};
 
-const message = { from: wallet.address, to: payTo, value: amount,
-  validAfter: now - 60, validBefore: now + 900, nonce };
+const authorization = { from: wallet.address, to: payTo, value,
+  validAfter: (now - 60).toString(), validBefore: (now + 900).toString(), nonce };
 
-const signature = await wallet.signTypedData(domain, types, message);
+const signature = await wallet.signTypedData(domain, types, {
+  ...authorization,
+  value: BigInt(authorization.value),
+  validAfter: BigInt(authorization.validAfter),
+  validBefore: BigInt(authorization.validBefore),
+});
 \`\`\`
 
-### Step 3: Send payment
+### Step 3: Send payment (sign → settle → fetch)
 
 \`\`\`javascript
+// Build the payment payload
 const payload = {
   x402Version: 2,
   scheme: 'exact',
   network: 'eip155:143',
-  payload: { authorization: message, signature }
+  payload: { authorization, signature }
 };
 
+// Encode as base64 for the header
+const paymentHeader = Buffer.from(JSON.stringify(payload)).toString('base64');
+
+// Send to the endpoint — server verifies + settles with facilitator
 const response = await fetch('${baseUrl}/v1/issues/monad/${latestId}', {
-  headers: { 'PAYMENT-SIGNATURE': Buffer.from(JSON.stringify(payload)).toString('base64') }
+  headers: { 'PAYMENT-SIGNATURE': paymentHeader }
 });
-const newsletter = await response.json();
+
+// Check response
+if (response.status === 402) {
+  console.log('Payment failed:', await response.json());
+} else {
+  const newsletter = await response.json();
+  const txHash = response.headers.get('X-Payment-Transaction');
+  console.log('Paid! TX:', txHash);
+  // newsletter.discoveries contains the content
+}
 \`\`\`
+
+**Key details:** The server handles settlement with the molandak facilitator. You just sign and send — no gas needed. The \`X-Payment-Transaction\` response header contains the on-chain tx hash.
 
 ---
 
@@ -531,7 +529,7 @@ GET ${baseUrl}/v1/issues/monad/{id}
 
 - **Network**: Monad mainnet (\`eip155:143\`)
 - **USDC contract**: \`0x754704Bc059F8C67012fEd69BC8A327a5aafb603\`
-- **Facilitator**: OpenX402 (\`https://facilitator.openx402.ai\`)
+- **Facilitator**: molandak (\`https://x402-facilitator.molandak.org\`)
 - **Payment method**: EIP-3009 transferWithAuthorization — no ETH required for gas
 - **Price**: same ${priceStr} USDC per issue
 
@@ -669,33 +667,87 @@ app.use(
   )
 );
 
-// Monad payment middleware
-app.use(
-  paymentMiddleware(
-    {
-      "/v1/issues/monad/:id": {
-        accepts: [
-          {
-            scheme: "exact",
-            network: MONAD_NETWORK,
-            payTo: MONAD_RECEIVER_ADDRESS,
-            price: centsToPriceString(DEFAULT_PRICING.perIssue),
-          },
-        ],
-        description: "Morning Stew newsletter issue (Monad)",
-        mimeType: "application/json",
-      },
-    },
-    monadServer,
-  )
-);
-
-// Get specific newsletter via Monad payment
+// Monad payment — manual facilitator flow (verify + settle)
+// The @x402/hono middleware doesn't settle correctly with the molandak facilitator,
+// so we handle the full flow in the route handler.
 app.get("/v1/issues/monad/:id", async (c) => {
   const id = c.req.param("id");
   const newsletter = newsletters.get(id) ?? (await getOrGenerateLatest()) ?? undefined;
   if (!newsletter) return c.json({ error: "Not found" }, 404);
-  console.log(`[api] Monad payment received for ${newsletter.id}`);
+
+  // Extract payment header
+  const paymentHeader = c.req.header("payment-signature") || c.req.header("PAYMENT-SIGNATURE");
+  if (!paymentHeader) {
+    // Return 402 with payment requirements
+    const price = centsToPriceString(DEFAULT_PRICING.perIssue);
+    return c.json({
+      x402Version: 2,
+      accepts: [{
+        scheme: "exact",
+        network: MONAD_NETWORK,
+        payTo: MONAD_RECEIVER_ADDRESS,
+        price,
+        asset: MONAD_USDC,
+        extra: { name: "USDC", version: "2" },
+      }],
+      facilitator: MONAD_FACILITATOR_URL,
+      description: "Morning Stew newsletter issue (Monad)",
+      mimeType: "application/json",
+    }, 402);
+  }
+
+  // Decode payment payload
+  let paymentPayload: any;
+  try {
+    paymentPayload = JSON.parse(Buffer.from(paymentHeader, "base64").toString());
+  } catch {
+    return c.json({ error: "Invalid PAYMENT-SIGNATURE header" }, 400);
+  }
+
+  // Build the facilitator request body (molandak format)
+  const facilitatorBody = {
+    x402Version: paymentPayload.x402Version || 2,
+    payload: paymentPayload.payload,
+    resource: {
+      url: c.req.url,
+      description: "Morning Stew newsletter issue (Monad)",
+      mimeType: "application/json",
+    },
+    accepted: {
+      scheme: "exact",
+      network: MONAD_NETWORK,
+      amount: paymentPayload.payload?.authorization?.value,
+      asset: MONAD_USDC,
+      payTo: MONAD_RECEIVER_ADDRESS,
+      maxTimeoutSeconds: 300,
+      extra: { name: "USDC", version: "2" },
+    },
+  };
+
+  // Verify with facilitator
+  const verifyRes = await fetch(`${MONAD_FACILITATOR_URL}/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(facilitatorBody),
+  });
+  const verifyData = await verifyRes.json() as { isValid: boolean; invalidReason?: string };
+  if (!verifyData.isValid) {
+    return c.json({ error: "Payment verification failed", reason: verifyData.invalidReason }, 402);
+  }
+
+  // Settle with facilitator (execute on-chain)
+  const settleRes = await fetch(`${MONAD_FACILITATOR_URL}/settle`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(facilitatorBody),
+  });
+  const settleData = await settleRes.json() as { success: boolean; transaction?: string; errorReason?: string };
+  if (!settleData.success) {
+    return c.json({ error: "Settlement failed", reason: settleData.errorReason }, 402);
+  }
+
+  console.log(`[api] Monad payment settled for ${newsletter.id} — tx: ${settleData.transaction}`);
+  c.header("X-Payment-Transaction", settleData.transaction || "");
   return c.json(toLeanNewsletter(newsletter));
 });
 
@@ -963,7 +1015,7 @@ Morning Stew API Server
    Solana Facilitator: ${FACILITATOR_URL} (PayAI)
    Monad Network:   ${MONAD_NETWORK}
    Monad Receiver:  ${MONAD_RECEIVER_ADDRESS || "NOT SET"}
-   Monad Facilitator: ${MONAD_FACILITATOR_URL} (OpenX402)
+   Monad Facilitator: ${MONAD_FACILITATOR_URL} (molandak)
    Cron:       ${ENABLE_CRON ? CRON_SCHEDULE + " UTC (6 AM PT)" : "DISABLED"}
 
 Endpoints:

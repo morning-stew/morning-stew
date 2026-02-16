@@ -52,7 +52,7 @@ GET /v1/issues/:id
 GET /v1/issues/monad/:id
 ```
 - **Network:** Monad mainnet (`eip155:143`)
-- **Facilitator:** [OpenX402](https://facilitator.openx402.ai) — gasless
+- **Facilitator:** [molandak](https://x402-facilitator.molandak.org) — gasless
 - **Asset:** USDC (`0x754704Bc059F8C67012fEd69BC8A327a5aafb603`)
 - **Protocol:** X402 + EIP-3009 transferWithAuthorization
 
