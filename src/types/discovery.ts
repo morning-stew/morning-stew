@@ -104,7 +104,7 @@ export function toLeanDiscovery(d: Discovery & { qualityScore?: any; valueProp?:
     tags: d.tags || [],
     score: d.qualityScore?.total ?? 0,
     stars: d.signals?.engagement ?? 0,
-    url: d.source.url,
+    url: d.source?.url ?? (d as any).url ?? "",
   };
 
   // Only include breaking if true
