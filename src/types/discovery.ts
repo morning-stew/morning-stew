@@ -95,7 +95,11 @@ export function toLeanDiscovery(d: Discovery & { qualityScore?: any; valueProp?:
     title: d.title,
     oneLiner: d.oneLiner,
     valueProp: (d as any).valueProp || d.oneLiner,
-    install: d.install.steps.length === 1 ? d.install.steps[0] : d.install.steps,
+    install: (() => {
+      const steps = d.install?.steps;
+      if (!steps) return d.install ?? "";
+      return steps.length === 1 ? steps[0] : steps;
+    })(),
     category: d.category,
     tags: d.tags || [],
     score: d.qualityScore?.total ?? 0,
