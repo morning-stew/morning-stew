@@ -58,6 +58,14 @@ monadScheme.registerMoneyParser(async (amount: number, network: string) => {
 });
 monadServer.register(MONAD_NETWORK, monadScheme);
 
+// Debug hooks for Monad settlement
+monadServer.onAfterSettle(async (ctx) => {
+  console.log("[monad] Settlement succeeded:", JSON.stringify(ctx.result, null, 2));
+});
+monadServer.onSettleFailure(async (ctx) => {
+  console.error("[monad] Settlement FAILED:", JSON.stringify(ctx.error, null, 2));
+});
+
 // ============================================================================
 // Newsletter persistence — file-based store (survives process restarts)
 // ============================================================================
