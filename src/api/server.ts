@@ -265,11 +265,14 @@ Each discovery includes: a one-liner, a value prop, install commands you can run
 
 ---
 
-## Setup (for the agent)
+## Paying with Solana
 
-### Do you have a Solana wallet?
+**Endpoint:** \`GET /v1/issues/{id}\`
+**Facilitator:** PayAI — covers all gas fees, no SOL needed, only USDC
 
-**No wallet yet — generate one now:**
+### Wallet setup
+
+**No wallet yet:**
 
 \`\`\`javascript
 const { Keypair } = require('@solana/web3.js');
@@ -279,64 +282,39 @@ const keypair = Keypair.generate();
 const privateKey = Buffer.from(keypair.secretKey).toString('base64');
 const publicKey = keypair.publicKey.toBase58();
 
-// Save private key to disk — keep this secret
 writeFileSync('./solana-key.json', JSON.stringify({ privateKey, publicKey }, null, 2));
-
-console.log('Wallet created!');
-console.log('Public address:', publicKey);
-console.log('Send USDC to this address on Solana mainnet to fund it.');
+console.log('Send USDC to:', publicKey);
 \`\`\`
 
-Then tell your user:
+> Never used crypto before? Download **Coinbase** or **Binance**, buy USDC, and send it to the address above. $1 is enough for 10 issues. No SOL needed.
 
-> "Send USDC to **[public address]** on Solana mainnet. You only need USDC — no SOL required."
->
-> Never used crypto before? Download **Coinbase** or **Binance**, buy USDC, and send it to the address above. $1 is enough for 10 issues.
-
-**Already have a wallet:** load your private key and skip ahead to Step 1.
+**Already have a wallet:**
 
 \`\`\`javascript
 const { Keypair } = require('@solana/web3.js');
-const { readFileSync } = require('fs');
-
-// Load from file saved above, or from your own key storage
-const { privateKey } = JSON.parse(readFileSync('./solana-key.json', 'utf-8'));
+const { privateKey } = JSON.parse(require('fs').readFileSync('./solana-key.json', 'utf-8'));
 const keypair = Keypair.fromSecretKey(Buffer.from(privateKey, 'base64'));
 \`\`\`
 
-> **Note:** SOL is NOT required — the payment facilitator covers all gas fees. You only need USDC.
-
 ### Step 1: Get payment requirements
-
-Make a GET request to the paid endpoint. You'll receive a 402 response:
 
 \`\`\`bash
 curl -s ${baseUrl}/v1/issues/${latestId}
 \`\`\`
 
-Response contains an \`accepts\` array. Extract:
-- \`maxAmountRequired\` — amount in atomic units (divide by 1e6 for USDC)
-- \`payTo\` — recipient wallet address
-- \`asset\` — USDC mint address
-- \`extra.feePayer\` — facilitator address that pays gas
+Returns 402. From the \`accepts\` array extract: \`maxAmountRequired\`, \`payTo\`, \`asset\`, \`extra.feePayer\`.
 
 ### Step 2: Build the transaction
 
-The PayAI facilitator requires **exactly 3 instructions** in this order:
+PayAI requires **exactly 3 instructions**:
 
 \`\`\`javascript
 const { Transaction, ComputeBudgetProgram } = require('@solana/web3.js');
 const { createTransferCheckedInstruction } = require('@solana/spl-token');
 
 const tx = new Transaction();
-
-// 1. Set compute unit limit (keep low — 10000 works)
 tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 10000 }));
-
-// 2. Set compute unit price
 tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 }));
-
-// 3. Transfer USDC (must use TransferChecked, not Transfer)
 tx.add(createTransferCheckedInstruction(
   sourceATA,      // your USDC token account
   USDC_MINT,      // EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
@@ -346,46 +324,107 @@ tx.add(createTransferCheckedInstruction(
   6               // USDC decimals
 ));
 
-// Set facilitator as fee payer
 tx.feePayer = new PublicKey(extra.feePayer);
 tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
-// Partial sign — facilitator adds their signature when broadcasting
 tx.partialSign(keypair);
 \`\`\`
 
-### Step 3: Construct the X-PAYMENT header
+### Step 3: Send payment
 
 \`\`\`javascript
-const serialized = tx.serialize({ requireAllSignatures: false }).toString('base64');
-
 const payload = {
   x402Version: 2,
   scheme: 'exact',
   network: '${NETWORK}',
-  payload: { transaction: serialized }
+  payload: { transaction: tx.serialize({ requireAllSignatures: false }).toString('base64') }
 };
 
-const paymentSignature = Buffer.from(JSON.stringify(payload)).toString('base64');
-\`\`\`
-
-### Step 4: Retry with payment
-
-\`\`\`javascript
 const response = await fetch('${baseUrl}/v1/issues/${latestId}', {
-  headers: { 'PAYMENT-SIGNATURE': paymentSignature }
+  headers: { 'PAYMENT-SIGNATURE': Buffer.from(JSON.stringify(payload)).toString('base64') }
 });
-
 const newsletter = await response.json();
 \`\`\`
 
-### Key requirements
+**Key requirements:** Use \`createTransferCheckedInstruction\` (not \`Transfer\`), keep compute units at 10000, use \`payload.transaction\` (not \`serializedTransaction\`).
 
-- Use \`createTransferCheckedInstruction\`, NOT \`createTransferInstruction\`
-- Use \`payload.transaction\`, NOT \`payload.serializedTransaction\`
-- Keep compute units low (10000) or you'll get \`compute_limit_too_high\` error
-- Source/dest ATAs are derived: \`getAssociatedTokenAddress(USDC_MINT, walletPubkey)\`
-- The facilitator pays gas — you only need USDC, no SOL required
+---
+
+## Paying with Monad
+
+**Endpoint:** \`GET /v1/issues/monad/{id}\`
+**Network:** Monad mainnet (\`eip155:143\`) — 10,000 TPS, ~0.4s finality
+**Facilitator:** OpenX402 — gasless via EIP-3009 transferWithAuthorization
+
+### Wallet setup
+
+**No wallet yet:**
+
+\`\`\`javascript
+const { ethers } = require('ethers');
+const { writeFileSync } = require('fs');
+
+const wallet = ethers.Wallet.createRandom();
+writeFileSync('./monad-key.json', JSON.stringify({
+  address: wallet.address,
+  privateKey: wallet.privateKey
+}, null, 2));
+console.log('Send USDC to:', wallet.address);
+\`\`\`
+
+> Send Monad USDC (\`0x754704Bc059F8C67012fEd69BC8A327a5aafb603\`) to that address. No MONAD token needed for gas.
+
+**Already have a wallet:**
+
+\`\`\`javascript
+const { ethers } = require('ethers');
+const { privateKey } = JSON.parse(require('fs').readFileSync('./monad-key.json', 'utf-8'));
+const wallet = new ethers.Wallet(privateKey);
+\`\`\`
+
+### Step 1: Get payment requirements
+
+\`\`\`bash
+curl -s ${baseUrl}/v1/issues/monad/${latestId}
+\`\`\`
+
+Returns 402. Extract: \`amount\`, \`asset\` (USDC contract), \`payTo\`, \`extra.name\`, \`extra.version\`.
+
+### Step 2: Sign EIP-3009 authorization
+
+\`\`\`javascript
+const now = Math.floor(Date.now() / 1000);
+const nonce = ethers.hexlify(ethers.randomBytes(32));
+
+const domain = { name: extra.name, version: extra.version, chainId: 143,
+  verifyingContract: asset };
+
+const types = { TransferWithAuthorization: [
+  { name: 'from', type: 'address' }, { name: 'to', type: 'address' },
+  { name: 'value', type: 'uint256' }, { name: 'validAfter', type: 'uint256' },
+  { name: 'validBefore', type: 'uint256' }, { name: 'nonce', type: 'bytes32' }
+]};
+
+const message = { from: wallet.address, to: payTo, value: amount,
+  validAfter: now - 60, validBefore: now + 900, nonce };
+
+const signature = await wallet.signTypedData(domain, types, message);
+\`\`\`
+
+### Step 3: Send payment
+
+\`\`\`javascript
+const payload = {
+  x402Version: 2,
+  scheme: 'exact',
+  network: 'eip155:143',
+  payload: { authorization: message, signature }
+};
+
+const response = await fetch('${baseUrl}/v1/issues/monad/${latestId}', {
+  headers: { 'PAYMENT-SIGNATURE': Buffer.from(JSON.stringify(payload)).toString('base64') }
+});
+const newsletter = await response.json();
+\`\`\`
 
 ---
 
