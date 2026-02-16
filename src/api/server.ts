@@ -5,6 +5,7 @@ import { paymentMiddleware } from "@x402/hono";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
 import { registerExactSvmScheme } from "@x402/svm/exact/server";
 import { SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2 } from "@x402/svm";
+import { registerExactEvmScheme } from "@x402/evm/exact/server";
 import cron from "node-cron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
@@ -29,10 +30,20 @@ const NETWORK = USE_TESTNET ? SOLANA_DEVNET_CAIP2 : SOLANA_MAINNET_CAIP2;
 // PayAI facilitator — Solana-first, no API keys needed
 const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://facilitator.payai.network";
 
-// x402 v2 resource server — registers solana:* wildcard (covers mainnet + devnet)
+// x402 v2 — Solana server (PayAI facilitator)
 const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL as `${string}://${string}` });
 const x402Server = new x402ResourceServer(facilitatorClient);
 registerExactSvmScheme(x402Server);
+
+// x402 v2 — Monad server (OpenX402 facilitator)
+const MONAD_RECEIVER_ADDRESS = process.env.MONAD_RECEIVER_ADDRESS || "";
+const MONAD_FACILITATOR_URL = process.env.MONAD_FACILITATOR_URL || "https://facilitator.openx402.ai";
+const MONAD_NETWORK = "eip155:143"; // Monad mainnet
+const MONAD_USDC = "0x754704Bc059F8C67012fEd69BC8A327a5aafb603";
+
+const monadFacilitatorClient = new HTTPFacilitatorClient({ url: MONAD_FACILITATOR_URL as `${string}://${string}` });
+const monadServer = new x402ResourceServer(monadFacilitatorClient);
+registerExactEvmScheme(monadServer);
 
 // ============================================================================
 // Newsletter persistence — file-based store (survives process restarts)
@@ -189,9 +200,17 @@ app.get("/.well-known/x402.json", (c) => {
       {
         path: "/v1/issues/{id}",
         method: "GET",
-        description: "Full newsletter issue with discoveries",
+        description: "Full newsletter issue — pay with Solana USDC",
         price: centsToPriceString(DEFAULT_PRICING.perIssue),
-        priceCents: DEFAULT_PRICING.perIssue,
+        network: NETWORK,
+        mimeType: "application/json",
+      },
+      {
+        path: "/v1/issues/monad/{id}",
+        method: "GET",
+        description: "Full newsletter issue — pay with Monad USDC",
+        price: centsToPriceString(DEFAULT_PRICING.perIssue),
+        network: MONAD_NETWORK,
         mimeType: "application/json",
       },
     ],
@@ -433,13 +452,30 @@ Returns the full Issue #0 content in the same JSON format as paid issues.
 
 ## Endpoints
 
-| Endpoint | Cost | What it does |
-|----------|------|--------------|
-| \`GET /v1/latest\` | Free | Latest issue ID + discovery count |
-| \`GET /v1/issues\` | Free | List all available issues |
-| \`GET /v1/issues/free\` | Free | Issue #0 — full content, no payment |
-| \`GET /v1/issues/{id}\` | ${priceStr} USDC | Full issue with discoveries |
-| \`GET /skill.md\` | Free | This document |
+| Endpoint | Cost | Network | What it does |
+|----------|------|---------|--------------|
+| \`GET /v1/latest\` | Free | — | Latest issue ID + discovery count |
+| \`GET /v1/issues\` | Free | — | List all available issues |
+| \`GET /v1/issues/free\` | Free | — | Issue #0 — full content, no payment |
+| \`GET /v1/issues/{id}\` | ${priceStr} USDC | Solana | Full issue — default payment path |
+| \`GET /v1/issues/monad/{id}\` | ${priceStr} USDC | Monad | Full issue — pay with Monad USDC |
+| \`GET /skill.md\` | Free | — | This document |
+
+### Paying with Monad
+
+If you have a Monad wallet instead of Solana, use the \`/v1/issues/monad/{id}\` endpoint:
+
+\`\`\`
+GET ${baseUrl}/v1/issues/monad/{id}
+\`\`\`
+
+- **Network**: Monad mainnet (\`eip155:143\`)
+- **USDC contract**: \`0x754704Bc059F8C67012fEd69BC8A327a5aafb603\`
+- **Facilitator**: OpenX402 (\`https://facilitator.openx402.ai\`)
+- **Payment method**: EIP-3009 transferWithAuthorization — no ETH required for gas
+- **Price**: same ${priceStr} USDC per issue
+
+The content returned is identical to the Solana endpoint — same JSON, same discoveries.
 
 ---
 
@@ -572,6 +608,36 @@ app.use(
     x402Server,
   )
 );
+
+// Monad payment middleware
+app.use(
+  paymentMiddleware(
+    {
+      "/v1/issues/monad/:id": {
+        accepts: [
+          {
+            scheme: "exact",
+            network: MONAD_NETWORK,
+            payTo: MONAD_RECEIVER_ADDRESS,
+            price: centsToPriceString(DEFAULT_PRICING.perIssue),
+          },
+        ],
+        description: "Morning Stew newsletter issue (Monad)",
+        mimeType: "application/json",
+      },
+    },
+    monadServer,
+  )
+);
+
+// Get specific newsletter via Monad payment
+app.get("/v1/issues/monad/:id", async (c) => {
+  const id = c.req.param("id");
+  const newsletter = newsletters.get(id) ?? (await getOrGenerateLatest()) ?? undefined;
+  if (!newsletter) return c.json({ error: "Not found" }, 404);
+  console.log(`[api] Monad payment received for ${newsletter.id}`);
+  return c.json(toLeanNewsletter(newsletter));
+});
 
 // Get specific newsletter (payment verified by middleware above)
 app.get("/v1/issues/:id", async (c) => {
@@ -846,8 +912,9 @@ Endpoints:
    GET  /v1/issues/:id          Full issue ($0.10 USDC)
    GET  /v1/editor/tip          Submit tip (form)
    POST /v1/editor/tip          Submit tip (JSON)
-   POST /internal/generate         Trigger generation
-   PATCH /internal/newsletters/:id Edit any newsletter field
+   POST /internal/generate              Trigger generation
+   PATCH /internal/newsletters/:id      Edit any newsletter field
+   GET  /v1/issues/monad/:id            Full issue ($0.10 USDC, Monad)
 `);
 
 serve({

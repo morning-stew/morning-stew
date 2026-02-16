@@ -17,6 +17,9 @@ importers:
       '@x402/core':
         specifier: ^2.3.1
         version: 2.3.1
+      '@x402/evm':
+        specifier: ^2.3.1
+        version: 2.3.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@x402/fetch':
         specifier: ^2.3.0
         version: 2.3.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
@@ -1174,6 +1177,9 @@ packages:
 
   '@x402/core@2.3.1':
     resolution: {integrity: sha512-CWvsf09tslISoVOzQ2TIoBLBP+bUycPsYmmRVe3EV5X2FtD7eXXpiPsiXLEVtWP7zhqLNP/5OIATsA2hSVLSfw==}
+
+  '@x402/evm@2.3.1':
+    resolution: {integrity: sha512-aN40OHG0HN1PhBXNFMRi5ISLHsExpF4qIvWUoVMKhFCfaXQDrqsfOKOC3PfcFtK/2Q8/SoiXNN7LsCkChL62lw==}
 
   '@x402/extensions@2.3.1':
     resolution: {integrity: sha512-ZdDIlMCqa6ZPrWLBUvoE1M00vPZ26PzHSj94gcuA3pJqPOTbPd06dD+D8k6D25mJPA7rfKrS/QcBuKTJQqLijw==}
@@ -3255,6 +3261,16 @@ snapshots:
   '@x402/core@2.3.1':
     dependencies:
       zod: 3.25.76
+
+  '@x402/evm@2.3.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)':
+    dependencies:
+      '@x402/core': 2.3.1
+      viem: 2.45.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@3.25.76)
+      zod: 3.25.76
+    transitivePeerDependencies:
+      - bufferutil
+      - typescript
+      - utf-8-validate
 
   '@x402/extensions@2.3.1(bufferutil@4.1.0)(ethers@6.16.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))(typescript@5.9.3)(utf-8-validate@5.0.10)':
     dependencies:
