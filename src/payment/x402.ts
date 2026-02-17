@@ -13,7 +13,6 @@ import { DEFAULT_PRICING } from "../types";
 // Network identifiers — CAIP-2 format (x402 v2)
 export const NETWORKS = {
   SOLANA_MAINNET: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-  SOLANA_DEVNET: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
 } as const;
 
 export type Network = (typeof NETWORKS)[keyof typeof NETWORKS];
@@ -24,14 +23,6 @@ export interface X402Config {
   facilitatorUrl: string;
   pricing?: Pricing;
 }
-
-/**
- * Default config for Solana devnet development
- */
-export const TESTNET_CONFIG: Partial<X402Config> = {
-  network: NETWORKS.SOLANA_DEVNET,
-  facilitatorUrl: "https://facilitator.payai.network",
-};
 
 /**
  * Default config for Solana mainnet production

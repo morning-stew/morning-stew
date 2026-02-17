@@ -1,6 +1,5 @@
 export {
   NETWORKS,
-  TESTNET_CONFIG,
   MAINNET_CONFIG,
   centsToPriceString,
   buildRouteConfig,

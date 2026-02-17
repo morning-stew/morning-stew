@@ -4,7 +4,7 @@ import { serve } from "@hono/node-server";
 import { paymentMiddleware } from "@x402/hono";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
 import { registerExactSvmScheme } from "@x402/svm/exact/server";
-import { SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2 } from "@x402/svm";
+import { SOLANA_MAINNET_CAIP2 } from "@x402/svm";
 // ExactEvmScheme not needed — Monad uses manual facilitator flow
 import cron from "node-cron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
@@ -24,8 +24,7 @@ import { compileNewsletter } from "../compiler/compile";
 
 // Config from environment
 const RECEIVER_ADDRESS = process.env.RECEIVER_ADDRESS || "";
-const USE_TESTNET = process.env.USE_TESTNET !== "false";
-const NETWORK = USE_TESTNET ? SOLANA_DEVNET_CAIP2 : SOLANA_MAINNET_CAIP2;
+const NETWORK = SOLANA_MAINNET_CAIP2;
 
 // PayAI facilitator — Solana-first, no API keys needed
 const FACILITATOR_URL = process.env.FACILITATOR_URL || "https://facilitator.payai.network";

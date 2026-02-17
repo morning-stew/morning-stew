@@ -11,8 +11,7 @@ describe("centsToPriceString", () => {
 });
 
 describe("NETWORKS", () => {
-  it("has correct PayAI network identifiers for Solana", () => {
-    expect(NETWORKS.SOLANA_MAINNET).toBe("solana");
-    expect(NETWORKS.SOLANA_DEVNET).toBe("solana-devnet");
+  it("has correct PayAI network identifier for Solana mainnet", () => {
+    expect(NETWORKS.SOLANA_MAINNET).toBe("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp");
   });
 });
