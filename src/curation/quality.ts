@@ -50,15 +50,14 @@ export interface RepoMetadata {
   isArchived: boolean;
 }
 
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
-
 function githubHeaders(): Record<string, string> {
+  const githubToken = process.env.GITHUB_TOKEN || "";
   const headers: Record<string, string> = {
     Accept: "application/vnd.github.v3+json",
     "User-Agent": "morning-stew-bot",
   };
-  if (GITHUB_TOKEN) {
-    headers["Authorization"] = `Bearer ${GITHUB_TOKEN}`;
+  if (githubToken) {
+    headers["Authorization"] = `Bearer ${githubToken}`;
   }
   return headers;
 }

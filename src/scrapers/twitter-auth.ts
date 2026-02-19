@@ -1,14 +1,17 @@
 /**
- * Shared OAuth 2.0 token management for X/Twitter API.
+ * Shared OAuth token management for X/Twitter API.
  *
- * Used by both the home timeline scraper and DM reader.
- * Tokens are stored in .morning-stew/twitter-oauth.json and auto-refresh.
+ * Supports two auth methods (checked in order):
+ * 1. OAuth 1.0a — static keys from .env, never expire, simpler for bot accounts
+ * 2. OAuth 2.0 PKCE — browser-based auth, tokens auto-refresh
  *
- * Run `pnpm twitter:oauth` once to bootstrap tokens.
+ * OAuth 1.0a is preferred when X_API_KEY + X_API_SECRET + X_ACCESS_TOKEN + X_ACCESS_SECRET are set.
+ * Falls back to OAuth 2.0 PKCE (run `pnpm twitter:oauth` to bootstrap).
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
+import { createHmac, randomBytes } from "crypto";
 
 const DATA_DIR = join(process.cwd(), ".morning-stew");
 const OAUTH_PATH = join(DATA_DIR, "twitter-oauth.json");
@@ -81,6 +84,9 @@ export async function refreshAccessToken(tokens: OAuthTokens): Promise<OAuthToke
  * Returns null if tokens aren't set up (run `pnpm twitter:oauth` first).
  */
 export async function getValidAccessToken(): Promise<string | null> {
+  // Prefer OAuth 1.0a if configured (returns a sentinel — actual auth is per-request)
+  if (isOAuth1Available()) return "oauth1";
+
   let tokens = loadTokens();
   if (!tokens) return null;
 
@@ -93,4 +99,91 @@ export async function getValidAccessToken(): Promise<string | null> {
   }
 
   return tokens.access_token;
+}
+
+// ── OAuth 1.0a support ──
+
+function isOAuth1Available(): boolean {
+  const accessSecret = process.env.X_ACCESS_SECRET || process.env.X_ACCESS_TOKEN_SECRET;
+  return !!(
+    process.env.X_API_KEY &&
+    process.env.X_API_SECRET &&
+    process.env.X_ACCESS_TOKEN &&
+    accessSecret
+  );
+}
+
+/**
+ * Build an OAuth 1.0a Authorization header for a request.
+ */
+export function buildOAuth1Header(method: string, url: string, params: Record<string, string> = {}): string {
+  const apiKey = process.env.X_API_KEY!;
+  const apiSecret = process.env.X_API_SECRET!;
+  const accessToken = process.env.X_ACCESS_TOKEN!;
+  const accessSecret = process.env.X_ACCESS_SECRET || process.env.X_ACCESS_TOKEN_SECRET!;
+
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const nonce = randomBytes(16).toString("hex");
+
+  const oauthParams: Record<string, string> = {
+    oauth_consumer_key: apiKey,
+    oauth_nonce: nonce,
+    oauth_signature_method: "HMAC-SHA1",
+    oauth_timestamp: timestamp,
+    oauth_token: accessToken,
+    oauth_version: "1.0",
+  };
+
+  // Combine oauth params + query params for signature base
+  const parsedUrl = new URL(url);
+  const allParams: Record<string, string> = { ...oauthParams, ...params };
+  parsedUrl.searchParams.forEach((v, k) => { allParams[k] = v; });
+
+  // Sort and encode
+  const paramString = Object.keys(allParams)
+    .sort()
+    .map((k) => `${encodeRFC3986(k)}=${encodeRFC3986(allParams[k])}`)
+    .join("&");
+
+  const baseUrl = `${parsedUrl.origin}${parsedUrl.pathname}`;
+  const signatureBase = `${method.toUpperCase()}&${encodeRFC3986(baseUrl)}&${encodeRFC3986(paramString)}`;
+  const signingKey = `${encodeRFC3986(apiSecret)}&${encodeRFC3986(accessSecret)}`;
+
+  const signature = createHmac("sha1", signingKey).update(signatureBase).digest("base64");
+
+  oauthParams["oauth_signature"] = signature;
+
+  const header = Object.keys(oauthParams)
+    .sort()
+    .map((k) => `${encodeRFC3986(k)}="${encodeRFC3986(oauthParams[k])}"`)
+    .join(", ");
+
+  return `OAuth ${header}`;
+}
+
+function encodeRFC3986(str: string): string {
+  return encodeURIComponent(str).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+/**
+ * Make an authenticated fetch using the best available auth method.
+ * Uses OAuth 1.0a if configured, otherwise OAuth 2.0 Bearer token.
+ */
+export async function authedFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  if (isOAuth1Available()) {
+    const method = options.method || "GET";
+    const authHeader = buildOAuth1Header(method, url);
+    return fetch(url, {
+      ...options,
+      headers: { ...options.headers as Record<string, string>, Authorization: authHeader },
+    });
+  }
+
+  // Fallback to OAuth 2.0
+  const token = await getValidAccessToken();
+  if (!token || token === "oauth1") throw new Error("No valid auth token available");
+  return fetch(url, {
+    ...options,
+    headers: { ...options.headers as Record<string, string>, Authorization: `Bearer ${token}` },
+  });
 }

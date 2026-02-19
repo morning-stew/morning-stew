@@ -24,7 +24,7 @@ import {
   type JudgeInput,
   type JudgeVerdict,
 } from "../curation/llm-judge";
-import { getValidAccessToken } from "./twitter-auth";
+import { getValidAccessToken, authedFetch } from "./twitter-auth";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 
@@ -73,6 +73,11 @@ function getSpendSummary(): string {
   return `$${twitterSpend.toFixed(2)}/$${twitterBudgetCap.toFixed(2)}`;
 }
 
+/** Expose Twitter cost data for thinking log. */
+export function getTwitterCosts(): { spend: number; budget: number; tweetsRead: number } {
+  return { spend: twitterSpend, budget: twitterBudgetCap, tweetsRead: Math.round(twitterSpend / COST_PER_TWEET) };
+}
+
 // ── Auth ──
 
 function getBearerToken(): string {
@@ -83,7 +88,7 @@ function getBearerToken(): string {
 
 // ── Types ──
 
-interface Tweet {
+export interface Tweet {
   id: string;
   text: string;
   author_id: string;
@@ -105,7 +110,7 @@ interface Tweet {
   tweet_url: string;
 }
 
-interface RawResponse {
+export interface RawResponse {
   data?: any[];
   includes?: { users?: any[] };
   meta?: { next_token?: string; result_count?: number };
@@ -170,8 +175,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function parseTweets(raw: RawResponse): Tweet[] {
-  if (!raw.data) return [];
+export function parseTweets(raw: RawResponse): Tweet[] {
+  if (!Array.isArray(raw.data)) return [];
   const users: Record<string, any> = {};
   for (const u of raw.includes?.users || []) {
     users[u.id] = u;
@@ -263,7 +268,7 @@ async function searchTweets(
 // URL ENRICHMENT — follow links in tweets for full context
 // ══════════════════════════════════════════════════════
 
-const BRAVE_API_KEY = process.env.BRAVE_API_KEY || "";
+function getBraveApiKey(): string { return process.env.BRAVE_API_KEY || ""; }
 
 /**
  * Fetch the content behind a URL so the LLM judge has real context,
@@ -297,7 +302,7 @@ async function fetchUrlContent(url: string, timeoutMs = 8000): Promise<string> {
     if (pageText && pageText.length > 100) return pageText;
 
     // Brave Search fallback — if direct fetch got nothing useful
-    if (BRAVE_API_KEY) {
+    if (getBraveApiKey()) {
       const braveResult = await braveSearch(url, timeoutMs);
       if (braveResult) return braveResult;
     }
@@ -335,19 +340,31 @@ export async function fetchTweetContent(tweetUrl: string): Promise<TweetContentR
     if (!match) return empty;
     const tweetId = match[1];
 
-    // Fetch the tweet via API (try bearer token first, fall back to OAuth)
-    let token: string;
-    try {
-      token = getBearerToken();
-    } catch {
-      const oauthToken = await getValidAccessToken();
-      if (!oauthToken) return empty;
+    // Fetch the tweet via API (prefer OAuth 1.0a / 2.0 when configured, then Bearer)
+    let token: string | null = null;
+    let useOAuth1 = false;
+    const oauthToken = await getValidAccessToken();
+    if (oauthToken) {
+      useOAuth1 = oauthToken === "oauth1";
       token = oauthToken;
     }
+    if (!token) {
+      try {
+        token = getBearerToken();
+      } catch {
+        return empty;
+      }
+    }
 
-    // Get the main tweet
+    // Get the main tweet (OAuth 1.0a uses authedFetch; Bearer/OAuth2 use apiGet)
     const tweetUrl2 = `${BASE}/tweets/${tweetId}?${FIELDS}`;
-    const raw = await apiGet(tweetUrl2, token);
+    let raw = useOAuth1
+      ? await authedFetch(tweetUrl2).then((r) => r.json()) as RawResponse
+      : await apiGet(tweetUrl2, token!);
+    // X API "get tweet by ID" returns data as a single object; parseTweets expects an array
+    if (raw?.data && !Array.isArray(raw.data)) {
+      raw = { ...raw, data: [raw.data] };
+    }
     const tweets = parseTweets(raw);
     if (tweets.length === 0) return empty;
 
@@ -357,7 +374,9 @@ export async function fetchTweetContent(tweetUrl: string): Promise<TweetContentR
     // Check conversation replies for additional links (especially from same author)
     try {
       const convUrl = `${BASE}/tweets/search/recent?query=conversation_id:${tweet.conversation_id}&max_results=20&${FIELDS}`;
-      const convRaw = await apiGet(convUrl, token);
+      const convRaw = useOAuth1
+        ? await authedFetch(convUrl).then((r) => r.json()) as RawResponse
+        : await apiGet(convUrl, token!);
       const replies = parseTweets(convRaw);
 
       // Prioritize replies from the same author (self-replies often have the link)
@@ -394,7 +413,7 @@ export async function fetchTweetContent(tweetUrl: string): Promise<TweetContentR
     }
 
     // If no URL content, try Brave Search on the tweet text
-    if (!linkedContent && BRAVE_API_KEY) {
+    if (!linkedContent && getBraveApiKey()) {
       linkedContent = await braveSearchForTweet(tweet.text);
     }
 
@@ -436,7 +455,7 @@ async function fetchUrlContentNonTweet(url: string, timeoutMs = 8000): Promise<s
     const pageText = await fetchPageText(url, timeoutMs);
     if (pageText && pageText.length > 100) return pageText;
 
-    if (BRAVE_API_KEY) {
+    if (getBraveApiKey()) {
       return await braveSearch(url, timeoutMs);
     }
 
@@ -453,7 +472,7 @@ async function fetchUrlContentNonTweet(url: string, timeoutMs = 8000): Promise<s
  * - A URL fetch fails (paywall, JS-rendered, etc.)
  */
 async function braveSearch(query: string, timeoutMs = 8000): Promise<string> {
-  if (!BRAVE_API_KEY) return "";
+  if (!getBraveApiKey()) return "";
 
   try {
     const controller = new AbortController();
@@ -466,7 +485,7 @@ async function braveSearch(query: string, timeoutMs = 8000): Promise<string> {
         headers: {
           Accept: "application/json",
           "Accept-Encoding": "gzip",
-          "X-Subscription-Token": BRAVE_API_KEY,
+          "X-Subscription-Token": getBraveApiKey(),
         },
         signal: controller.signal,
       }
@@ -502,7 +521,7 @@ async function braveSearch(query: string, timeoutMs = 8000): Promise<string> {
  * Extracts key terms from the tweet and searches for them.
  */
 async function braveSearchForTweet(tweetText: string): Promise<string> {
-  if (!BRAVE_API_KEY) return "";
+  if (!getBraveApiKey()) return "";
 
   // Extract likely project/tool names — capitalized words, quoted terms, @mentions
   const quoted = tweetText.match(/"([^"]+)"/g)?.map(s => s.replace(/"/g, "")) || [];
@@ -603,7 +622,7 @@ async function enrichTweetUrls(
   const enrichments = new Map<string, string>();
 
   const tweetsWithUrls = tweets.filter((t) => t.urls.length > 0);
-  const tweetsNoUrls = BRAVE_API_KEY
+  const tweetsNoUrls = getBraveApiKey()
     ? tweets.filter((t) => t.urls.length === 0 && t.text.length > 30)
     : [];
 

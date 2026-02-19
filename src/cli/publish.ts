@@ -13,7 +13,7 @@ import type { Newsletter } from "../types";
  * 3. API server (if running)
  */
 
-async function publishToTwitter(newsletter: Newsletter): Promise<boolean> {
+export async function publishToTwitter(newsletter: Newsletter): Promise<boolean> {
   // Summarize discoveries by category
   const categories = new Map<string, number>();
   for (const d of newsletter.discoveries) {
@@ -46,7 +46,7 @@ https://morning-stew.ai/v1/issues/${newsletter.id}
   return false;
 }
 
-async function publishToApi(newsletter: Newsletter): Promise<boolean> {
+export async function publishToApi(newsletter: Newsletter): Promise<boolean> {
   const apiUrl = process.env.API_URL || "http://localhost:3000";
 
   try {

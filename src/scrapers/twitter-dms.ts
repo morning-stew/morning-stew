@@ -12,7 +12,7 @@ import type { Discovery } from "../types/discovery";
 import { createDiscovery } from "../types/discovery";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
 import { join } from "path";
-import { getValidAccessToken } from "./twitter-auth";
+import { getValidAccessToken, authedFetch } from "./twitter-auth";
 import { fetchTweetContent } from "./twitter-api";
 
 const DATA_DIR = join(process.cwd(), ".morning-stew");
@@ -23,7 +23,7 @@ const BASE = "https://api.x.com/2";
 /**
  * Editor account — DMs from this handle are treated as editorial suggestions
  */
-const EDITOR_HANDLE = "editor";
+const EDITOR_HANDLE = "Aboozle";
 
 // ── Seen DMs ──
 
@@ -201,20 +201,23 @@ async function readDMTips(maxMessages: number): Promise<Discovery[]> {
   const discoveries: Discovery[] = [];
 
   try {
-    const userRes = await fetch(`${BASE}/users/by/username/${EDITOR_HANDLE}?user.fields=id`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!userRes.ok) return [];
+    const userRes = await authedFetch(`${BASE}/users/by/username/${EDITOR_HANDLE}?user.fields=id`);
+    if (!userRes.ok) {
+      console.log(`[editor-dms] User lookup failed: ${userRes.status}`);
+      return [];
+    }
 
     const userData = await userRes.json();
     const editorUserId = userData.data?.id;
     if (!editorUserId) return [];
 
-    const dmRes = await fetch(
-      `${BASE}/dm_conversations/with/${editorUserId}/dm_events?dm_event.fields=id,text,event_type,created_at,sender_id&max_results=100`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
+    const dmRes = await authedFetch(
+      `${BASE}/dm_conversations/with/${editorUserId}/dm_events?dm_event.fields=id,text,event_type,created_at,sender_id&max_results=100`
     );
-    if (!dmRes.ok) return [];
+    if (!dmRes.ok) {
+      console.log(`[editor-dms] DM fetch failed: ${dmRes.status} ${await dmRes.text().then(t => t.slice(0, 200))}`);
+      return [];
+    }
 
     const dmData = await dmRes.json();
     const events = dmData.data || [];

@@ -9,7 +9,7 @@ export { scrapeGitHubTrending } from "./github-trending";
 export { scrapeClawIndex } from "./clawindex";
 
 // X/Twitter API — alternating Following feed + keyword search
-export { scrapeTwitterFeed, scrapeHomeTimeline, scrapeXApiSearch, SEARCH_QUERIES, resetTwitterBudget, fetchTweetContent } from "./twitter-api";
+export { scrapeTwitterFeed, scrapeHomeTimeline, scrapeXApiSearch, SEARCH_QUERIES, resetTwitterBudget, fetchTweetContent, getTwitterCosts } from "./twitter-api";
 
 // Editor DMs via X API — suggestions from editor
 export { scrapeEditorDMs, EDITOR_HANDLE } from "./twitter-dms";

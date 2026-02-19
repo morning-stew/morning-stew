@@ -54,15 +54,14 @@ export interface GitHubTrendingConfig {
   sinceDays?: number;
 }
 
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
-
 function githubHeaders(): Record<string, string> {
+  const githubToken = process.env.GITHUB_TOKEN || "";
   const headers: Record<string, string> = {
     Accept: "application/vnd.github.v3+json",
     "User-Agent": "morning-stew-bot",
   };
-  if (GITHUB_TOKEN) {
-    headers["Authorization"] = `Bearer ${GITHUB_TOKEN}`;
+  if (githubToken) {
+    headers["Authorization"] = `Bearer ${githubToken}`;
   }
   return headers;
 }
@@ -81,7 +80,7 @@ export async function scrapeGitHubTrending(
 ): Promise<Discovery[]> {
   const { maxResults = 15, minStars = 30, sinceDays = 7 } = config;
 
-  console.log(`[github-trending] Searching for agent repos (auth: ${!!GITHUB_TOKEN})...`);
+  console.log(`[github-trending] Searching for agent repos (auth: ${!!process.env.GITHUB_TOKEN})...`);
 
   const discoveries: Discovery[] = [];
   const seenRepos = new Set<string>();
@@ -161,7 +160,7 @@ export async function scrapeGitHubTrending(
       }
 
       // Rate limit protection — shorter with auth
-      await new Promise((r) => setTimeout(r, GITHUB_TOKEN ? 300 : 1500));
+      await new Promise((r) => setTimeout(r, process.env.GITHUB_TOKEN ? 300 : 1500));
     } catch (error) {
       console.log(`[github-trending] Error searching "${query}":`, error);
     }

@@ -11,9 +11,13 @@
  * If the answer is no, it doesn't matter how interesting the content is.
  */
 
-const NOUS_API_KEY = process.env.NOUS_API_KEY || "";
-const NOUS_API_URL = process.env.NOUS_API_URL || "https://inference-api.nousresearch.com/v1";
-const NOUS_MODEL = process.env.NOUS_MODEL || "Hermes-4.3-36B";
+function getNousConfig() {
+  return {
+    apiKey: process.env.NOUS_API_KEY || "",
+    apiUrl: process.env.NOUS_API_URL || "https://inference-api.nousresearch.com/v1",
+    model: process.env.NOUS_MODEL || "Hermes-4.3-36B",
+  };
+}
 
 export interface JudgeInput {
   content: string;         // The tweet text, HN title, or repo description
@@ -114,7 +118,8 @@ Respond with ONLY a JSON object (no markdown, no code fences):
  * Judge a single piece of content.
  */
 export async function judgeContent(input: JudgeInput): Promise<JudgeVerdict | null> {
-  if (!NOUS_API_KEY) {
+  const { apiKey, apiUrl, model } = getNousConfig();
+  if (!apiKey) {
     console.log("[llm-judge] No NOUS_API_KEY set, skipping LLM judge");
     return null;
   }
@@ -122,14 +127,14 @@ export async function judgeContent(input: JudgeInput): Promise<JudgeVerdict | nu
   const userMessage = buildUserMessage(input);
 
   try {
-    const response = await fetch(`${NOUS_API_URL}/chat/completions`, {
+    const response = await fetch(`${apiUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${NOUS_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: NOUS_MODEL,
+        model,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: userMessage },
@@ -169,7 +174,7 @@ export async function judgeBatch(
   inputs: JudgeInput[],
   concurrency = 5
 ): Promise<(JudgeVerdict | null)[]> {
-  if (!NOUS_API_KEY) {
+  if (!getNousConfig().apiKey) {
     console.log("[llm-judge] No NOUS_API_KEY set, skipping LLM judge");
     return inputs.map(() => null);
   }
@@ -214,5 +219,5 @@ function buildUserMessage(input: JudgeInput): string {
  * Check if the LLM judge is available (API key configured).
  */
 export function isJudgeAvailable(): boolean {
-  return !!NOUS_API_KEY;
+  return !!process.env.NOUS_API_KEY;
 }

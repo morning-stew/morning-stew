@@ -1,9 +1,10 @@
 #!/usr/bin/env tsx
 
-import { compileNewsletter } from "../compiler";
-import { toLeanNewsletter } from "../types/newsletter";
 import { writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
+
+import { compileNewsletter } from "../compiler";
+import { toLeanNewsletter } from "../types/newsletter";
 
 async function main() {
   console.log("🍵 Morning Stew Generator\n");

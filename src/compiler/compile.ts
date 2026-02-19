@@ -10,9 +10,11 @@ import {
   scrapeXApiSearch,
   scrapeEditorDMs,
   resetTwitterBudget,
+  getTwitterCosts,
 } from "../scrapers";
 import { curateDiscoveries, type CuratedDiscovery } from "../curation";
 import { judgeBatch, isJudgeAvailable, type JudgeInput, type JudgeVerdict } from "../curation/llm-judge";
+import { loadRegistry, saveRegistry, registryKey, registerDiscovery } from "../registry";
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 
@@ -33,6 +35,15 @@ interface ThinkingLogEntry {
     failedCriteria?: string[];
   };
   curationScore?: number;
+  enriched?: {
+    oneLiner?: string;
+    what?: string;
+    why?: string;
+    impact?: string;
+    category?: string;
+    installHint?: string;
+    valueProp?: string;
+  };
 }
 
 interface ThinkingLog {
@@ -47,6 +58,12 @@ interface ThinkingLog {
     finalPicks: number;
     onRadarCount: number;
     skippedCount: number;
+  };
+  costs: {
+    twitter: { spend: number; budget: number; tweetsRead: number };
+    llmJudgeCalls: number;
+    githubApiCalls: number;
+    totalEstimated: number;
   };
   candidates: ThinkingLogEntry[];
 }
@@ -103,6 +120,7 @@ export async function compileNewsletter(
     date: dateStr,
     generatedAt: new Date().toISOString(),
     summary: { totalCandidates: 0, llmJudgedCount: 0, llmPassedCount: 0, curatedCount: 0, finalPicks: 0, onRadarCount: 0, skippedCount: 0 },
+    costs: { twitter: { spend: 0, budget: 0, tweetsRead: 0 }, llmJudgeCalls: 0, githubApiCalls: 0, totalEstimated: 0 },
     candidates: [],
   };
 
@@ -225,7 +243,7 @@ export async function compileNewsletter(
             why: v.valueProp || d.why,
             impact: v.valueProp || d.impact,
           });
-          thinkingLog.candidates.push({ title: v.title || d.title, url: d.source.url, source: d.source.type, phase: "llm-judge", decision: "pending", llmVerdict: { actionable: true, confidence: v.confidence, scores: s as any } });
+          thinkingLog.candidates.push({ title: v.title || d.title, url: d.source.url, source: d.source.type, phase: "llm-judge", decision: "pending", llmVerdict: { actionable: true, confidence: v.confidence, scores: s as any }, enriched: { oneLiner: v.oneLiner || undefined, what: v.oneLiner || undefined, why: v.valueProp || undefined, impact: v.valueProp || undefined, category: v.category || undefined, installHint: v.installHint || undefined } });
         } else {
           const failedKeys = Object.entries(s!).filter(([, score]) => score < 0.5).map(([k]) => k);
           const failedCriteria = failedKeys.join(", ");
@@ -312,8 +330,8 @@ export async function compileNewsletter(
     // Log curation decisions
     for (const d of curation.picks) {
       const existing = thinkingLog.candidates.find(c => c.url === d.source.url);
-      if (existing) { existing.decision = "included"; existing.phase = "curation"; existing.curationScore = d.qualityScore.total; }
-      else thinkingLog.candidates.push({ title: d.title, url: d.source.url, source: d.source.type, phase: "curation", decision: "included", curationScore: d.qualityScore.total });
+      if (existing) { existing.decision = "included"; existing.phase = "curation"; existing.curationScore = d.qualityScore.total; existing.enriched = { ...existing.enriched, oneLiner: d.oneLiner, what: d.what, why: d.why, impact: d.impact, valueProp: d.valueProp }; }
+      else thinkingLog.candidates.push({ title: d.title, url: d.source.url, source: d.source.type, phase: "curation", decision: "included", curationScore: d.qualityScore.total, enriched: { oneLiner: d.oneLiner, what: d.what, why: d.why, impact: d.impact, valueProp: d.valueProp } });
     }
     for (const d of curation.onRadar) {
       const existing = thinkingLog.candidates.find(c => c.url === d.source.url);
@@ -347,6 +365,16 @@ export async function compileNewsletter(
 
   // Enforce minimum picks — scrap the newsletter if quality bar isn't met
   if (!options.skipCuration && !options.skipMinimumCheck && picks.length < MIN_PICKS) {
+    // Save thinking log before scrapping so we can diagnose why
+    thinkingLog.newsletterId = `SCRAPPED-${dateStr}`;
+    thinkingLog.summary.totalCandidates = thinkingLog.candidates.length;
+    thinkingLog.summary.finalPicks = picks.length;
+    thinkingLog.summary.onRadarCount = onRadar.length;
+    thinkingLog.summary.skippedCount = skipped.length;
+    thinkingLog.summary.curatedCount = picks.length + onRadar.length + skipped.length;
+    finalizeCosts(thinkingLog);
+    saveThinkingLog(thinkingLog);
+
     throw new Error(
       `[compile] Insufficient quality content: only ${picks.length}/${MIN_PICKS} picks found. Newsletter scrapped.`
     );
@@ -389,12 +417,23 @@ export async function compileNewsletter(
   thinkingLog.summary.onRadarCount = onRadar.length;
   thinkingLog.summary.skippedCount = skipped.length;
   thinkingLog.summary.curatedCount = picks.length + onRadar.length + skipped.length;
+  finalizeCosts(thinkingLog);
   saveThinkingLog(thinkingLog);
 
   return newsletter;
 }
 
 // ── Thinking log persistence ──
+
+function finalizeCosts(log: ThinkingLog): void {
+  const twitter = getTwitterCosts();
+  log.costs.twitter = twitter;
+  log.costs.llmJudgeCalls = log.summary.llmJudgedCount;
+  // GitHub API: ~3 calls per github-sourced candidate (repo, commits, readme)
+  const ghCandidates = log.candidates.filter((c) => c.source === "github").length;
+  log.costs.githubApiCalls = ghCandidates * 3;
+  log.costs.totalEstimated = twitter.spend;
+}
 
 function saveThinkingLog(log: ThinkingLog): void {
   try {
@@ -458,18 +497,48 @@ function loadHistoricalKeys(lookbackCount = 10): Set<string> {
 
 function dedupeDiscoveries(discoveries: Discovery[]): Discovery[] {
   const seen = loadHistoricalKeys();
+  const registry = loadRegistry();
 
-  return discoveries.filter((d) => {
+  const kept = discoveries.filter((d) => {
+    // Registry check: exclude if already picked for a newsletter
+    const rKey = registryKey(d);
+    const entry = registry.entries[rKey];
+    if (entry && entry.timesPicked > 0) {
+      registerDiscovery(registry, d);
+      return false;
+    }
+
+    // Also check registry by normalized title
+    const titleKey = d.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 30);
+    for (const e of Object.values(registry.entries)) {
+      const eTitleKey = e.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 30);
+      if (eTitleKey === titleKey && e.timesPicked > 0) {
+        registerDiscovery(registry, d);
+        return false;
+      }
+    }
+
+    // Fallback: historical keys from past issues
     const key = d.source.url;
-    if (seen.has(key)) return false;
+    if (seen.has(key)) {
+      registerDiscovery(registry, d);
+      return false;
+    }
     seen.add(key);
 
-    const titleKey = d.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 30);
-    if (seen.has(titleKey)) return false;
+    if (seen.has(titleKey)) {
+      registerDiscovery(registry, d);
+      return false;
+    }
     seen.add(titleKey);
 
+    // Register all kept discoveries (without issueId — they haven't been picked yet)
+    registerDiscovery(registry, d);
     return true;
   });
+
+  saveRegistry(registry);
+  return kept;
 }
 
 function summarizeCategories(discoveries: CuratedDiscovery[]): string {
