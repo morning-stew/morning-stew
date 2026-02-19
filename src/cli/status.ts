@@ -106,6 +106,16 @@ function loadIssues(): IssueInfo[] {
     });
 }
 
+function loadPaymentCounts(): Map<string, number> {
+  const countsPath = join(DATA_DIR, "payment-counts.json");
+  try {
+    if (existsSync(countsPath)) {
+      return new Map(Object.entries(JSON.parse(readFileSync(countsPath, "utf-8"))));
+    }
+  } catch {}
+  return new Map();
+}
+
 // ── Solana ─────────────────────────────────────────────────────────────────────
 interface SolStats { usdcBalance: number | null; payments24h: number | null; }
 
@@ -209,6 +219,8 @@ async function main() {
   const latest = issues[0] ?? null;
   const hasToday = issues.some(i => i.date === todayPT());
 
+  const paymentCounts = loadPaymentCounts();
+
   console.log(`${lbl("Total")}${bold(String(issues.length))} issues`);
   if (latest) {
     console.log(`${lbl("Latest")}${bold(latest.id)}  ${dim(latest.date)}  ${dim(`"${latest.name}"`)}`);
@@ -216,6 +228,15 @@ async function main() {
     console.log(`${lbl("Latest")}${dim("none")}`);
   }
   console.log(`${lbl("Today")}${hasToday ? ok("ready") : warn("not yet generated")}`);
+
+  if (issues.length > 0) {
+    console.log(`\n  ${DIM}${"ID".padEnd(18)}${"Date".padEnd(14)}${"Name".padEnd(24)}Paid${R}`);
+    for (const issue of issues) {
+      const count = paymentCounts.get(issue.id) ?? 0;
+      const countStr = count > 0 ? `${GREEN}${bold(String(count))}${R}` : dim("0");
+      console.log(`  ${issue.id.padEnd(18)}${issue.date.padEnd(14)}${issue.name.slice(0, 22).padEnd(24)}${countStr}`);
+    }
+  }
 
   // Kick off chain fetches in parallel while we print other stuff
   const [solStats, monadStats, localPing, prodPing, freeIssueRes] = await Promise.all([

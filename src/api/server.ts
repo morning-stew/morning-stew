@@ -89,6 +89,37 @@ function loadNewslettersFromDisk(): Map<string, Newsletter> {
 const newsletters = loadNewslettersFromDisk();
 
 // ============================================================================
+// Payment count tracking — persisted to DATA_DIR/payment-counts.json
+// ============================================================================
+
+const PAYMENT_COUNTS_PATH = join(DATA_DIR, "payment-counts.json");
+
+function loadPaymentCounts(): Map<string, number> {
+  try {
+    if (existsSync(PAYMENT_COUNTS_PATH)) {
+      const data = JSON.parse(readFileSync(PAYMENT_COUNTS_PATH, "utf-8"));
+      return new Map(Object.entries(data));
+    }
+  } catch {}
+  return new Map();
+}
+
+function savePaymentCounts(counts: Map<string, number>): void {
+  try {
+    writeFileSync(PAYMENT_COUNTS_PATH, JSON.stringify(Object.fromEntries(counts), null, 2));
+  } catch (e) {
+    console.error("[payments] Failed to save payment counts:", e);
+  }
+}
+
+function recordPayment(id: string): void {
+  paymentCounts.set(id, (paymentCounts.get(id) ?? 0) + 1);
+  savePaymentCounts(paymentCounts);
+}
+
+const paymentCounts = loadPaymentCounts();
+
+// ============================================================================
 // Freshness & auto-generation logic
 // ============================================================================
 
@@ -746,6 +777,7 @@ app.get("/v1/issues/monad/:id", async (c) => {
   }
 
   console.log(`[api] Monad payment settled for ${newsletter.id} — tx: ${settleData.transaction}`);
+  recordPayment(newsletter.id);
   c.header("X-Payment-Transaction", settleData.transaction || "");
   return c.json(toLeanNewsletter(newsletter));
 });
@@ -774,6 +806,7 @@ app.get("/v1/issues/:id", async (c) => {
   }
 
   console.log(`[api] Payment received for ${newsletter.id}`);
+  recordPayment(newsletter.id);
   return c.json(toLeanNewsletter(newsletter));
 });
 
