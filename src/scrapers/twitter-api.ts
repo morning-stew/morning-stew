@@ -372,6 +372,7 @@ export async function fetchTweetContent(tweetUrl: string): Promise<TweetContentR
     let allUrls = [...tweet.urls];
 
     // Check conversation replies for additional links (especially from same author)
+    let replyTexts: string[] = [];
     try {
       const convUrl = `${BASE}/tweets/search/recent?query=conversation_id:${tweet.conversation_id}&max_results=20&${FIELDS}`;
       const convRaw = useOAuth1
@@ -385,6 +386,7 @@ export async function fetchTweetContent(tweetUrl: string): Promise<TweetContentR
 
       for (const reply of [...authorReplies, ...otherReplies]) {
         allUrls.push(...reply.urls);
+        replyTexts.push(reply.text);
       }
 
       if (authorReplies.length > 0) {
@@ -394,13 +396,34 @@ export async function fetchTweetContent(tweetUrl: string): Promise<TweetContentR
       // Replies fetch failed — that's fine, use what we have
     }
 
+    // Resolve t.co shortlinks directly from tweet text + reply texts.
+    // The X API entity expansion often misses URLs at the end of truncated tweets,
+    // so we extract them ourselves and follow redirects to get the real destination.
+    const allTexts = [tweet.text, ...replyTexts];
+    const resolvedTco = await resolveTcoLinks(allTexts);
+    if (resolvedTco.length > 0) {
+      console.log(`[tweet-fetch] Resolved ${resolvedTco.length} t.co link(s): ${resolvedTco.join(", ")}`);
+      allUrls.push(...resolvedTco);
+    }
+
     // Dedupe URLs, filter out twitter/x.com links
-    const externalUrls = [...new Set(allUrls)].filter((u) => {
+    let externalUrls = [...new Set(allUrls)].filter((u) => {
       try {
         const h = new URL(u).hostname;
         return h !== "x.com" && h !== "twitter.com";
       } catch { return false; }
     });
+
+    // If the tweet has no external URLs (e.g. links only to a video or is text-only),
+    // look up @mentioned users' profile websites via X API — products almost always
+    // put their docs/site URL in their Twitter bio.
+    if (externalUrls.length === 0 && tweet.mentions.length > 0) {
+      const mentionUrls = await resolveProfileUrls(tweet.mentions, token!, useOAuth1);
+      if (mentionUrls.length > 0) {
+        console.log(`[tweet-fetch] No tweet URLs — using profile URLs from @mentions: ${mentionUrls.join(", ")}`);
+        externalUrls = mentionUrls;
+      }
+    }
 
     // Follow the best URL for content
     let linkedContent = "";
@@ -534,6 +557,102 @@ async function braveSearchForTweet(tweetText: string): Promise<string> {
   return braveSearch(query);
 }
 
+/**
+ * Extract all t.co shortlinks from tweet texts and resolve them to their
+ * final destinations by following redirects. This is more reliable than
+ * depending on the X API's entity expansion, which frequently misses URLs
+ * at the end of truncated tweets.
+ */
+async function resolveTcoLinks(texts: string[]): Promise<string[]> {
+  const tcoPattern = /https:\/\/t\.co\/[A-Za-z0-9]+/g;
+  const tcoLinks = new Set<string>();
+
+  for (const text of texts) {
+    for (const match of text.matchAll(tcoPattern)) {
+      tcoLinks.add(match[0]);
+    }
+  }
+
+  if (tcoLinks.size === 0) return [];
+
+  const resolved: string[] = [];
+
+  for (const tco of tcoLinks) {
+    try {
+      const res = await fetch(tco, {
+        method: "HEAD",
+        redirect: "follow",
+        signal: AbortSignal.timeout(5000),
+      });
+      const final = res.url;
+      if (final && final !== tco) {
+        resolved.push(final);
+      }
+    } catch {
+      // HEAD blocked — try GET
+      try {
+        const res = await fetch(tco, {
+          redirect: "follow",
+          signal: AbortSignal.timeout(5000),
+        });
+        const final = res.url;
+        if (final && final !== tco) {
+          resolved.push(final);
+        }
+      } catch {
+        // unresolvable — skip
+      }
+    }
+  }
+
+  return resolved;
+}
+
+/**
+ * Look up @mentioned users via X API and return their profile website URLs.
+ * Used when a tweet has no external links — the product being mentioned almost
+ * always has their docs/site in their Twitter bio.
+ */
+async function resolveProfileUrls(
+  usernames: string[],
+  token: string,
+  useOAuth1: boolean
+): Promise<string[]> {
+  if (usernames.length === 0) return [];
+
+  try {
+    const names = usernames.slice(0, 5).join(",");
+    const url = `${BASE}/users/by?usernames=${names}&user.fields=url,entities`;
+    const raw = useOAuth1
+      ? await authedFetch(url).then((r) => r.json())
+      : await apiGet(url, token);
+
+    const users: any[] = (raw as any).data || [];
+    const urls: string[] = [];
+
+    for (const user of users) {
+      // entities.url.urls[0].expanded_url is the unshortened profile URL
+      const expanded = user.entities?.url?.urls?.[0]?.expanded_url;
+      if (expanded) {
+        urls.push(expanded);
+      } else if (user.url) {
+        // Fall back to raw url field (may be a t.co link — resolve it)
+        const resolved = await resolveTcoLinks([user.url]);
+        urls.push(...resolved);
+      }
+    }
+
+    return urls.filter((u) => {
+      try {
+        const h = new URL(u).hostname;
+        return h !== "x.com" && h !== "twitter.com";
+      } catch { return false; }
+    });
+  } catch {
+    return [];
+  }
+}
+
 async function fetchGitHubReadme(pathname: string, timeoutMs: number): Promise<string> {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length < 2) return "";
@@ -570,43 +689,539 @@ async function fetchGitHubReadme(pathname: string, timeoutMs: number): Promise<s
   }
 }
 
+// ── OpenClaw browser integration ──
+//
+// When OpenClaw Gateway is running locally, use its browser HTTP API for page
+// fetching and navigation. It handles any site (SPAs, JS-rendered, etc.) and
+// its snapshot gives Claude a structured text tree — better than a screenshot.
+//
+// When OpenClaw isn't available (Railway, CI, etc.), fall back to Playwright.
+
+const OPENCLAW_BROWSER_URL = process.env.OPENCLAW_BROWSER_URL || "http://127.0.0.1:18791";
+
+let _openClawAvailable: boolean | null = null;
+
+async function isOpenClawAvailable(): Promise<boolean> {
+  if (_openClawAvailable !== null) return _openClawAvailable;
+  try {
+    const res = await fetch(`${OPENCLAW_BROWSER_URL}/`, {
+      signal: AbortSignal.timeout(1000),
+    });
+    _openClawAvailable = res.ok;
+  } catch {
+    _openClawAvailable = false;
+  }
+  if (_openClawAvailable) {
+    console.log("[enrich] OpenClaw browser available — using managed browser");
+  } else {
+    console.log("[enrich] OpenClaw not available — using Playwright fallback");
+  }
+  return _openClawAvailable;
+}
+
+async function openClawNavigate(url: string): Promise<void> {
+  await fetch(`${OPENCLAW_BROWSER_URL}/navigate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+    signal: AbortSignal.timeout(15000),
+  });
+  // Give the page a moment to settle after navigation
+  await sleep(1500);
+}
+
+async function openClawSnapshot(): Promise<string> {
+  const res = await fetch(`${OPENCLAW_BROWSER_URL}/snapshot`, {
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) return "";
+  return res.text();
+}
+
+/**
+ * Ask Claude (text only) which URL in this snapshot is best for install/skill docs.
+ * Much cheaper than a vision call — the snapshot is already structured text.
+ */
+async function pickBestLinkFromSnapshot(snapshot: string, baseUrl: string): Promise<string | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const nousKey = process.env.NOUS_API_KEY;
+
+  // Try Nous first (already configured), then Anthropic
+  if (nousKey) {
+    try {
+      const nousUrl = process.env.NOUS_API_URL || "https://inference-api.nousresearch.com/v1";
+      const model = process.env.NOUS_MODEL || "Hermes-4.3-36B";
+      const res = await fetch(`${nousUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${nousKey}` },
+        body: JSON.stringify({
+          model,
+          max_tokens: 100,
+          temperature: 0,
+          messages: [
+            {
+              role: "user",
+              content: `Here is a page snapshot from ${baseUrl}:\n\n${snapshot.slice(0, 3000)}\n\nI want to find the most actionable page — install instructions, quickstart, agent skill, or SDK docs. Reply with ONLY the full URL to navigate to next. If the current page already has install instructions, reply "current". If nothing useful is visible, reply "none".`,
+            },
+          ],
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const text = data.choices?.[0]?.message?.content?.trim() || "";
+        return parseUrlFromLlmReply(text, baseUrl);
+      }
+    } catch {
+      // fall through to Anthropic
+    }
+  }
+
+  if (apiKey) {
+    try {
+      const { default: Anthropic } = await import("@anthropic-ai/sdk");
+      const client = new Anthropic({ apiKey });
+      const response = await client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 100,
+        messages: [{
+          role: "user",
+          content: `Here is a page snapshot from ${baseUrl}:\n\n${snapshot.slice(0, 3000)}\n\nI want to find the most actionable page — install instructions, quickstart, agent skill, or SDK docs. Reply with ONLY the full URL to navigate to next. If the current page already has install instructions, reply "current". If nothing useful is visible, reply "none".`,
+        }],
+      });
+      const text = response.content[0].type === "text" ? response.content[0].text.trim() : "";
+      return parseUrlFromLlmReply(text, baseUrl);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function parseUrlFromLlmReply(text: string, baseUrl: string): string | null {
+  if (!text || text.toLowerCase() === "none") return null;
+  if (text.toLowerCase() === "current") return "current";
+  try {
+    const url = text.startsWith("http")
+      ? text
+      : `${new URL(baseUrl).origin}${text.startsWith("/") ? "" : "/"}${text}`;
+    new URL(url); // validate
+    return url;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchPageText(url: string, timeoutMs: number): Promise<string> {
+  // ── Fast path: plain fetch (works for static pages with install commands) ──
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
+    const timeout = setTimeout(() => controller.abort(), Math.min(timeoutMs, 5000));
     const res = await fetch(url, {
       headers: { "User-Agent": "morning-stew/1.0" },
       signal: controller.signal,
       redirect: "follow",
     });
     clearTimeout(timeout);
+    if (res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("text/html") || contentType.includes("text/plain")) {
+        const text = stripHtml(await res.text());
+        if (text.length >= 200 && hasInstallCommands(text)) return text.slice(0, 2000);
+      }
+    }
+  } catch {
+    // fall through
+  }
 
-    if (!res.ok) return "";
+  // ── OpenClaw: managed browser with structured snapshot + LLM navigation ──
+  if (await isOpenClawAvailable()) {
+    return fetchPageTextViaOpenClaw(url);
+  }
 
-    const contentType = res.headers.get("content-type") || "";
-    if (!contentType.includes("text/html") && !contentType.includes("text/plain")) {
-      return "";
+  // ── Playwright fallback ──
+  return fetchPageTextViaPlaywright(url, timeoutMs);
+}
+
+async function fetchPageTextViaOpenClaw(url: string): Promise<string> {
+  try {
+    await openClawNavigate(url);
+    const landingSnapshot = await openClawSnapshot();
+
+    if (hasInstallCommands(landingSnapshot)) {
+      return landingSnapshot.slice(0, 2000);
     }
 
-    const html = await res.text();
+    // Ask the LLM which link to follow
+    const nextUrl = await pickBestLinkFromSnapshot(landingSnapshot, url);
+    if (nextUrl && nextUrl !== "current") {
+      console.log(`[enrich] OpenClaw navigating to: ${nextUrl}`);
+      await openClawNavigate(nextUrl);
+      const docsSnapshot = await openClawSnapshot();
+      return `${landingSnapshot.slice(0, 500)}\n\n--- Docs ---\n${docsSnapshot}`.slice(0, 2000);
+    }
 
-    const text = html
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/\s+/g, " ")
-      .trim();
+    return landingSnapshot.slice(0, 2000);
+  } catch (err: any) {
+    console.log(`[enrich] OpenClaw fetch failed: ${err.message}`);
+    return "";
+  }
+}
 
-    return text.slice(0, 2000);
+async function fetchPageTextViaPlaywright(url: string, timeoutMs: number): Promise<string> {
+  try {
+    const { chromium } = await import("playwright");
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
+      const landingText = (await page.evaluate(() => document.body?.innerText || ""))
+        .replace(/\s+/g, " ").trim();
+
+      if (hasInstallCommands(landingText)) return landingText.slice(0, 2000);
+
+      // Take a screenshot and ask Claude vision which link to follow
+      const nextUrl = await findDocsLinkViaVision(page, url);
+      if (nextUrl && nextUrl !== "current") {
+        console.log(`[enrich] Playwright navigating to: ${nextUrl}`);
+        await page.goto(nextUrl, { waitUntil: "networkidle", timeout: timeoutMs });
+        const docsText = (await page.evaluate(() => document.body?.innerText || ""))
+          .replace(/\s+/g, " ").trim();
+        return `${landingText.slice(0, 500)}\n\n--- Docs ---\n${docsText}`.slice(0, 2000);
+      }
+
+      return landingText.slice(0, 2000);
+    } finally {
+      await browser.close();
+    }
   } catch {
     return "";
   }
+}
+
+/**
+ * Check if text contains concrete install/setup commands.
+ */
+function hasInstallCommands(text: string): boolean {
+  return /npm install|pip install|cargo install|npx |git clone|brew install|yarn add/i.test(text);
+}
+
+/**
+ * Playwright fallback: screenshot → Claude vision → URL.
+ * Only used when OpenClaw isn't available.
+ */
+async function findDocsLinkViaVision(page: import("playwright").Page, baseUrl: string): Promise<string | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const screenshot = await page.screenshot({ type: "jpeg", quality: 80 });
+    const { default: Anthropic } = await import("@anthropic-ai/sdk");
+    const client = new Anthropic({ apiKey });
+    const response = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 100,
+      messages: [{
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/jpeg", data: screenshot.toString("base64") },
+          },
+          {
+            type: "text",
+            text: `This is a screenshot of ${baseUrl}. I want to find the page with install instructions or an agent skill. Reply with ONLY the full URL to navigate to next. If the current page already has install instructions, reply "current". If nothing useful is visible, reply "none".`,
+          },
+        ],
+      }],
+    });
+
+    const text = response.content[0].type === "text" ? response.content[0].text.trim() : "";
+    const url = parseUrlFromLlmReply(text, baseUrl);
+    if (url) console.log(`[findDocsLink] Claude vision → ${url}`);
+    return url;
+  } catch (err: any) {
+    console.log(`[findDocsLink] Vision lookup failed: ${err.message}`);
+    return null;
+  }
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// ── Deep Enrichment Agent ─────────────────────────────────────────────
+
+/**
+ * Fetch a page returning both raw HTML (for link extraction) and stripped text.
+ */
+async function fetchRawPage(url: string, timeoutMs = 8000): Promise<{ html: string; text: string } | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(url, {
+      headers: { "User-Agent": "morning-stew/1.0" },
+      signal: controller.signal,
+      redirect: "follow",
+    });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    const html = await res.text();
+    return { html, text: stripHtml(html).slice(0, 3000) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract anchor links from raw HTML, resolving relative URLs.
+ */
+function extractLinks(html: string, baseUrl: string): Array<{ url: string; text: string }> {
+  const links: Array<{ url: string; text: string }> = [];
+  const seen = new Set<string>();
+  const anchorRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gi;
+  let match;
+
+  while ((match = anchorRegex.exec(html)) !== null) {
+    const href = match[1];
+    const text = match[2].replace(/<[^>]+>/g, "").trim();
+
+    if (!text || text.length > 100) continue;
+    if (href.startsWith("#") || href.startsWith("javascript:")) continue;
+
+    try {
+      const resolved = new URL(href, baseUrl).toString();
+      if (seen.has(resolved)) continue;
+      seen.add(resolved);
+      links.push({ url: resolved, text });
+    } catch {
+      continue;
+    }
+  }
+
+  return links;
+}
+
+/**
+ * Format a structured research brief into plain text for the enrichment map.
+ */
+function formatResearchBrief(brief: { summary: string; install: string; docsUrl: string; gotchas: string }): string {
+  let text = brief.summary;
+  if (brief.install) text += `\n\nInstall/Setup:\n${brief.install}`;
+  if (brief.docsUrl) text += `\n\nDocs: ${brief.docsUrl}`;
+  if (brief.gotchas) text += `\n\nGotchas: ${brief.gotchas}`;
+  return text;
+}
+
+const RESEARCH_AGENT_PROMPT = `You are a research agent gathering information about a developer tool or library.
+
+You have been given the content of one or more web pages. Your goal is to determine whether you have enough information to write a complete research brief for an AI agent developer newsletter.
+
+A COMPLETE research brief needs:
+1. What the tool/library does (clear, specific purpose)
+2. How to install it (exact commands: npm install, pip install, git clone, etc.)
+3. Key dependencies or requirements
+4. Any gotchas or tradeoffs a developer should know
+
+Review the page content and respond with ONLY a JSON object (no markdown fences):
+
+If you have enough information:
+{
+  "status": "done",
+  "brief": {
+    "summary": "2-3 sentences on what this does and key tradeoffs",
+    "install": "exact install/setup commands, one per line",
+    "docsUrl": "best documentation URL found, or empty string",
+    "gotchas": "any important caveats, or empty string"
+  }
+}
+
+If you need more information, pick ONE link from the available links list to follow:
+{
+  "status": "follow",
+  "url": "the full URL to fetch next",
+  "reason": "what information you expect to find there (one sentence)"
+}
+
+IMPORTANT:
+- Only pick links from the "Links found on the current page" list — do not invent URLs.
+- If the current page has install commands and a clear description, respond "done" even if more info could be found.
+- If there are no promising links and you lack info, respond "done" with whatever you have.`;
+
+function buildResearchMessage(
+  originalUrl: string,
+  hops: Array<{ url: string; content: string }>,
+  availableLinks: Array<{ url: string; text: string }>
+): string {
+  let msg = `Original URL: ${originalUrl}\n\n`;
+
+  for (const hop of hops) {
+    msg += `--- Content from ${hop.url} ---\n${hop.content.slice(0, 1500)}\n\n`;
+  }
+
+  if (availableLinks.length > 0) {
+    msg += `--- Links found on the current page ---\n`;
+    for (const link of availableLinks.slice(0, 20)) {
+      msg += `- [${link.text}](${link.url})\n`;
+    }
+  }
+
+  return msg;
+}
+
+interface ResearchDecision {
+  status: "done" | "follow";
+  brief?: { summary: string; install: string; docsUrl: string; gotchas: string };
+  url?: string;
+  reason?: string;
+}
+
+async function askResearchAgent(
+  originalUrl: string,
+  hops: Array<{ url: string; content: string }>,
+  links: Array<{ url: string; text: string }>
+): Promise<ResearchDecision> {
+  const nousKey = process.env.NOUS_API_KEY;
+  if (!nousKey) return { status: "done", brief: { summary: "", install: "", docsUrl: "", gotchas: "" } };
+
+  const nousUrl = process.env.NOUS_API_URL || "https://inference-api.nousresearch.com/v1";
+  const model = process.env.NOUS_MODEL || "Hermes-4.3-36B";
+
+  try {
+    const response = await fetch(`${nousUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${nousKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: RESEARCH_AGENT_PROMPT },
+          { role: "user", content: buildResearchMessage(originalUrl, hops, links) },
+        ],
+        max_tokens: 500,
+        temperature: 0.1,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!response.ok) {
+      console.log(`[deep-enrich] Hermes API error: ${response.status}`);
+      return { status: "done", brief: { summary: "", install: "", docsUrl: "", gotchas: "" } };
+    }
+
+    const data = await response.json();
+    const text = data.choices?.[0]?.message?.content?.trim() || "";
+    const jsonStr = text.replace(/^```json?\s*/i, "").replace(/```\s*$/, "").trim();
+    return JSON.parse(jsonStr) as ResearchDecision;
+  } catch (err) {
+    console.log(`[deep-enrich] askResearchAgent error: ${err}`);
+    return { status: "done", brief: { summary: "", install: "", docsUrl: "", gotchas: "" } };
+  }
+}
+
+/**
+ * Deep-enrich a URL using an iterative research agent loop.
+ * Hermes fetches pages and follows links until it has enough info
+ * to produce a structured research brief, or hits guardrails.
+ *
+ * Short-circuits for GitHub (README) and tweet URLs (existing logic).
+ * Falls back to fetchUrlContent when no NOUS_API_KEY is set.
+ */
+export async function deepEnrichUrl(url: string): Promise<string> {
+  const MAX_HOPS = 8;
+  const HOP_TIMEOUT_MS = 8000;
+
+  const parsed = new URL(url);
+
+  // Short-circuit: GitHub READMEs are already sufficient
+  if (parsed.hostname === "github.com") {
+    const readme = await fetchGitHubReadme(parsed.pathname, HOP_TIMEOUT_MS);
+    if (readme) return readme;
+  }
+
+  // Short-circuit: tweet URLs use existing fetchTweetContent
+  if (parsed.hostname === "x.com" || parsed.hostname === "twitter.com") {
+    const tweetContent = await fetchTweetContent(url);
+    return tweetContent.fullContent || "";
+  }
+
+  // No Hermes available — fall back to single-hop
+  if (!process.env.NOUS_API_KEY) {
+    console.log(`[deep-enrich] No NOUS_API_KEY — falling back to single-hop: ${url}`);
+    return fetchUrlContent(url);
+  }
+
+  console.log(`[deep-enrich] Starting agent loop for: ${url}`);
+
+  // ── Agent loop ──
+  const hops: Array<{ url: string; content: string }> = [];
+  let currentUrl = url;
+
+  for (let hop = 0; hop < MAX_HOPS; hop++) {
+    const page = await fetchRawPage(currentUrl, HOP_TIMEOUT_MS);
+    if (!page) {
+      // Fetch failed — try Brave fallback on first hop only
+      if (hop === 0 && getBraveApiKey()) {
+        const braveResult = await braveSearch(url, HOP_TIMEOUT_MS);
+        if (braveResult) hops.push({ url: currentUrl, content: braveResult });
+      }
+      break;
+    }
+
+    hops.push({ url: currentUrl, content: page.text });
+    const links = extractLinks(page.html, currentUrl);
+
+    const decision = await askResearchAgent(url, hops, links);
+
+    if (decision.status === "done" && decision.brief) {
+      const brief = formatResearchBrief(decision.brief);
+      if (brief.length > 0) {
+        console.log(`[deep-enrich] Done after ${hop + 1} hop(s): ${url}`);
+        return brief;
+      }
+    }
+
+    if (decision.status === "follow" && decision.url) {
+      try {
+        new URL(decision.url); // validate
+        currentUrl = decision.url;
+        console.log(`[deep-enrich] Hop ${hop + 1}: following ${currentUrl} (${decision.reason})`);
+      } catch {
+        break; // invalid URL — stop
+      }
+    } else {
+      break; // "done" with empty brief or unexpected response
+    }
+  }
+
+  // Loop exhausted or exited early — synthesize from what we have
+  if (hops.length > 0) {
+    const finalDecision = await askResearchAgent(url, hops, []);
+    if (finalDecision.status === "done" && finalDecision.brief) {
+      const brief = formatResearchBrief(finalDecision.brief);
+      if (brief.length > 0) {
+        console.log(`[deep-enrich] Synthesized from ${hops.length} hop(s): ${url}`);
+        return brief;
+      }
+    }
+    // Last resort: concatenated raw text
+    return hops.map((h) => h.content).join("\n\n").slice(0, 3000);
+  }
+
+  return "";
 }
 
 /**
@@ -617,7 +1232,7 @@ async function fetchPageText(url: string, timeoutMs: number): Promise<string> {
  */
 async function enrichTweetUrls(
   tweets: Tweet[],
-  concurrency = 5
+  concurrency = 3
 ): Promise<Map<string, string>> {
   const enrichments = new Map<string, string>();
 
@@ -637,7 +1252,7 @@ async function enrichTweetUrls(
     while (idx < tweetsWithUrls.length) {
       const i = idx++;
       const tweet = tweetsWithUrls[i];
-      const content = await fetchUrlContent(tweet.urls[0]);
+      const content = await deepEnrichUrl(tweet.urls[0]);
       if (content) {
         enrichments.set(tweet.id, content);
       }

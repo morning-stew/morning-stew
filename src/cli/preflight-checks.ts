@@ -137,16 +137,37 @@ export async function checkBrave(): Promise<CheckResult> {
   }
 }
 
+export async function checkDeepEnrich(): Promise<CheckResult> {
+  const apiKey = process.env.NOUS_API_KEY;
+  if (!apiKey) return { name: "Deep Enrich", status: "skip", message: "NOUS_API_KEY not set" };
+
+  try {
+    const { deepEnrichUrl } = await import("../scrapers/twitter-api");
+    const brief = await deepEnrichUrl("https://github.com/pydantic/pydantic-ai");
+    if (!brief || brief.length < 50) {
+      return { name: "Deep Enrich", status: "fail", message: `brief too short (${brief.length} chars)` };
+    }
+    const hasInstall = /pip install|npm install|git clone|cargo install|brew install/i.test(brief);
+    if (!hasInstall) {
+      return { name: "Deep Enrich", status: "fail", message: "brief missing install commands" };
+    }
+    return { name: "Deep Enrich", status: "pass", message: `brief OK (${brief.length} chars, has install)` };
+  } catch (e: any) {
+    return { name: "Deep Enrich", status: "fail", message: e.message };
+  }
+}
+
 /**
  * Run all preflight checks. Returns structured results.
  */
 export async function runPreflight(): Promise<CheckResult[]> {
-  const [github, nous, twitter, brave] = await Promise.all([
+  const [github, nous, twitter, brave, deepEnrich] = await Promise.all([
     checkGitHub(),
     checkNous(),
     checkTwitterBearer(),
     checkBrave(),
+    checkDeepEnrich(),
   ]);
   const oauth = checkTwitterOAuth();
-  return [github, nous, twitter, oauth, brave];
+  return [github, nous, twitter, oauth, brave, deepEnrich];
 }

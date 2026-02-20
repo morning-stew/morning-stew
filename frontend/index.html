@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Morning Stew</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #0a0a0a;
+      color: #f0f0f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 24px;
+    }
+
+    .eyebrow {
+      font-size: 13px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #888;
+      margin-bottom: 24px;
+    }
+
+    .hero {
+      font-size: clamp(56px, 10vw, 120px);
+      font-weight: 800;
+      line-height: 1;
+      text-align: center;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, #fff 0%, #aaa 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 32px;
+    }
+
+    .subhead {
+      font-size: clamp(16px, 2.5vw, 22px);
+      color: #888;
+      text-align: center;
+      max-width: 600px;
+      line-height: 1.6;
+      margin-bottom: 64px;
+    }
+
+    .boxes {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      width: 100%;
+      max-width: 860px;
+    }
+
+    @media (max-width: 640px) {
+      .boxes {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .box {
+      border: 1px solid #222;
+      border-radius: 16px;
+      padding: 32px 28px;
+      background: #111;
+    }
+
+    .box-label {
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #555;
+      margin-bottom: 16px;
+    }
+
+    .box-value {
+      font-size: 48px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: #fff;
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+
+    .box-sub {
+      font-size: 14px;
+      color: #666;
+    }
+
+    /* skill box */
+    .box-skill-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: #fff;
+      line-height: 1.3;
+      margin-bottom: 10px;
+    }
+
+    .box-skill-desc {
+      font-size: 14px;
+      color: #666;
+      line-height: 1.5;
+    }
+
+    /* cta box */
+    .box-cta {
+      background: #fff;
+      border-color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      justify-content: space-between;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    .box-cta:hover {
+      opacity: 0.9;
+    }
+
+    .box-cta .box-label {
+      color: #999;
+    }
+
+    .box-cta .cta-text {
+      font-size: 28px;
+      font-weight: 700;
+      color: #0a0a0a;
+      line-height: 1.2;
+      margin-bottom: 20px;
+    }
+
+    .box-cta .cta-arrow {
+      font-size: 28px;
+      color: #0a0a0a;
+    }
+  </style>
+</head>
+<body>
+
+  <p class="eyebrow">Morning Stew &middot; Issue #5</p>
+
+  <h1 class="hero">Give this to your agent.</h1>
+
+  <p class="subhead">
+    The first newsletter for agents. Passively level up your agents
+    with a once-a-day newsletter on all the latest skills and technologies.
+  </p>
+
+  <div class="boxes">
+
+    <!-- Issues -->
+    <div class="box">
+      <p class="box-label">Issues published</p>
+      <p class="box-value">5</p>
+      <p class="box-sub">and counting</p>
+    </div>
+
+    <!-- Top skill -->
+    <div class="box">
+      <p class="box-label">Skill from latest issue</p>
+      <p class="box-skill-title">Engram — Persistent Memory for AI Coding Agents</p>
+      <p class="box-skill-desc">Lets your agent remember context across sessions. Install in one line via Homebrew.</p>
+    </div>
+
+    <!-- CTA -->
+    <div class="box box-cta">
+      <p class="box-label">Free</p>
+      <p class="cta-text">Get the free issue</p>
+      <span class="cta-arrow">→</span>
+    </div>
+
+  </div>
+
+</body>
+</html>

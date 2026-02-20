@@ -5,6 +5,7 @@ import {
   checkTwitterBearer,
   checkTwitterOAuth,
   checkBrave,
+  checkDeepEnrich,
   runPreflight,
 } from "./preflight-checks";
 
@@ -313,16 +314,77 @@ describe("checkBrave", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════
+// checkDeepEnrich
+// ═══════════════════════════════════════════════════════════════
+
+// Mock twitter-api to avoid real HTTP + Hermes calls
+vi.mock("../scrapers/twitter-api", () => ({
+  deepEnrichUrl: vi.fn(),
+  fetchTweetContent: vi.fn(),
+  parseTweets: vi.fn().mockReturnValue([]),
+}));
+
+import { deepEnrichUrl } from "../scrapers/twitter-api";
+
+describe("checkDeepEnrich", () => {
+  it("skips when NOUS_API_KEY is not set", async () => {
+    const result = await checkDeepEnrich();
+    expect(result.status).toBe("skip");
+    expect(result.name).toBe("Deep Enrich");
+  });
+
+  it("passes when brief has content and install commands", async () => {
+    process.env.NOUS_API_KEY = "nous-test-key";
+    vi.mocked(deepEnrichUrl).mockResolvedValue(
+      "PydanticAI is a framework for building AI agents.\n\nInstall/Setup:\npip install pydantic-ai\n\nDocs: https://ai.pydantic.dev"
+    );
+
+    const result = await checkDeepEnrich();
+    expect(result.status).toBe("pass");
+    expect(result.message).toContain("has install");
+  });
+
+  it("fails when brief is too short", async () => {
+    process.env.NOUS_API_KEY = "nous-test-key";
+    vi.mocked(deepEnrichUrl).mockResolvedValue("short");
+
+    const result = await checkDeepEnrich();
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("too short");
+  });
+
+  it("fails when brief has no install commands", async () => {
+    process.env.NOUS_API_KEY = "nous-test-key";
+    vi.mocked(deepEnrichUrl).mockResolvedValue(
+      "This is a long description of some tool that does interesting things but lacks any install instructions whatsoever."
+    );
+
+    const result = await checkDeepEnrich();
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("missing install");
+  });
+
+  it("fails on error", async () => {
+    process.env.NOUS_API_KEY = "nous-test-key";
+    vi.mocked(deepEnrichUrl).mockRejectedValue(new Error("network failure"));
+
+    const result = await checkDeepEnrich();
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("network failure");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
 // runPreflight (orchestrator)
 // ═══════════════════════════════════════════════════════════════
 
 describe("runPreflight", () => {
-  it("returns results for all 5 checks", async () => {
+  it("returns results for all 6 checks", async () => {
     // All keys missing — should get mix of fail/skip
     vi.stubGlobal("fetch", mockFetchOk({}));
 
     const results = await runPreflight();
-    expect(results).toHaveLength(5);
+    expect(results).toHaveLength(6);
 
     const names = results.map((r) => r.name);
     expect(names).toContain("GITHUB_TOKEN");
@@ -330,6 +392,7 @@ describe("runPreflight", () => {
     expect(names).toContain("X_BEARER_TOKEN");
     expect(names).toContain("Twitter OAuth");
     expect(names).toContain("BRAVE_API_KEY");
+    expect(names).toContain("Deep Enrich");
   });
 
   it("reports correct statuses with no env vars set", async () => {
@@ -343,6 +406,7 @@ describe("runPreflight", () => {
     expect(byName["X_BEARER_TOKEN"]).toBe("fail");    // required
     expect(byName["Twitter OAuth"]).toBe("fail");     // no tokens
     expect(byName["BRAVE_API_KEY"]).toBe("skip");     // optional
+    expect(byName["Deep Enrich"]).toBe("skip");       // needs NOUS_API_KEY
   });
 
   it("all pass when keys are valid", async () => {
@@ -364,6 +428,10 @@ describe("runPreflight", () => {
       expires_at: Date.now() + 600_000,
       scope: "tweet.read",
     });
+
+    vi.mocked(deepEnrichUrl).mockResolvedValue(
+      "PydanticAI is a framework for building AI agents.\n\nInstall/Setup:\npip install pydantic-ai"
+    );
 
     const results = await runPreflight();
     const allPass = results.every((r) => r.status === "pass");
