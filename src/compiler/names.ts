@@ -32,9 +32,14 @@ export function generateId(_date: Date): string {
 }
 
 /**
- * Generate newsletter name: "Issue #N"
+ * Generate newsletter name: "Issue #N (Feb 22, 2026)"
  */
-export function generateName(_date: Date): string {
+export function generateName(date: Date): string {
   const issueNumber = getNextIssueNumber();
-  return `Issue #${issueNumber}`;
+  const dateStr = date.toLocaleDateString("en-US", { 
+    month: "short", 
+    day: "numeric", 
+    year: "numeric" 
+  });
+  return `Issue #${issueNumber} (${dateStr})`;
 }

@@ -15,7 +15,7 @@ function getNousConfig() {
   return {
     apiKey: process.env.NOUS_API_KEY || "",
     apiUrl: process.env.NOUS_API_URL || "https://inference-api.nousresearch.com/v1",
-    model: process.env.NOUS_MODEL || "Hermes-4.3-36B",
+    model: process.env.NOUS_MODEL || "Hermes-4-405B",
   };
 }
 
@@ -35,6 +35,8 @@ export interface JudgeVerdict {
   oneLiner: string;             // What is this in one sentence
   valueProp: string;            // Why should a developer care
   installHint: string;          // How to get started (if actionable)
+  requirements?: string[];      // List of requirements
+  considerations?: string[];    // Gotchas to know
   skipReason?: string;          // Which criterion failed and why
   scores: {
     utility: number;            // 0-1
@@ -111,6 +113,8 @@ Respond with ONLY a JSON object (no markdown, no code fences):
   "oneLiner": "What this is in one sentence — be specific about what it DOES",
   "valueProp": "One sentence: what becomes possible for an agent developer after installing this",
   "installHint": "The exact install command (e.g. 'npm install x' or 'git clone url')",
+  "requirements": ["list of requirements like Node.js 18+, Python 3.8, etc."],
+  "considerations": ["list of gotchas like 'requires API key', 'limited to 100 requests/day', etc."],
   "skipReason": "If rejected: which criterion failed and why (one sentence)"
 }`;
 

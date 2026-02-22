@@ -683,268 +683,32 @@ async function fetchGitHubReadme(pathname: string, timeoutMs: number): Promise<s
     if (!res.ok) return "";
 
     const text = await res.text();
-    return text.slice(0, 3000);
+    return text.slice(0, 5000);
   } catch {
     return "";
   }
 }
 
-// ── OpenClaw browser integration ──
-//
-// When OpenClaw Gateway is running locally, use its browser HTTP API for page
-// fetching and navigation. It handles any site (SPAs, JS-rendered, etc.) and
-// its snapshot gives Claude a structured text tree — better than a screenshot.
-//
-// When OpenClaw isn't available (Railway, CI, etc.), fall back to Playwright.
+// ── Simple web fetch (curl -s URL | strip HTML equivalent) ──
 
-const OPENCLAW_BROWSER_URL = process.env.OPENCLAW_BROWSER_URL || "http://127.0.0.1:18791";
-
-let _openClawAvailable: boolean | null = null;
-
-async function isOpenClawAvailable(): Promise<boolean> {
-  if (_openClawAvailable !== null) return _openClawAvailable;
+async function webFetch(url: string): Promise<string> {
   try {
-    const res = await fetch(`${OPENCLAW_BROWSER_URL}/`, {
-      signal: AbortSignal.timeout(1000),
-    });
-    _openClawAvailable = res.ok;
-  } catch {
-    _openClawAvailable = false;
-  }
-  if (_openClawAvailable) {
-    console.log("[enrich] OpenClaw browser available — using managed browser");
-  } else {
-    console.log("[enrich] OpenClaw not available — using Playwright fallback");
-  }
-  return _openClawAvailable;
-}
-
-async function openClawNavigate(url: string): Promise<void> {
-  await fetch(`${OPENCLAW_BROWSER_URL}/navigate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
-    signal: AbortSignal.timeout(15000),
-  });
-  // Give the page a moment to settle after navigation
-  await sleep(1500);
-}
-
-async function openClawSnapshot(): Promise<string> {
-  const res = await fetch(`${OPENCLAW_BROWSER_URL}/snapshot`, {
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok) return "";
-  return res.text();
-}
-
-/**
- * Ask Claude (text only) which URL in this snapshot is best for install/skill docs.
- * Much cheaper than a vision call — the snapshot is already structured text.
- */
-async function pickBestLinkFromSnapshot(snapshot: string, baseUrl: string): Promise<string | null> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  const nousKey = process.env.NOUS_API_KEY;
-
-  // Try Nous first (already configured), then Anthropic
-  if (nousKey) {
-    try {
-      const nousUrl = process.env.NOUS_API_URL || "https://inference-api.nousresearch.com/v1";
-      const model = process.env.NOUS_MODEL || "Hermes-4.3-36B";
-      const res = await fetch(`${nousUrl}/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${nousKey}` },
-        body: JSON.stringify({
-          model,
-          max_tokens: 100,
-          temperature: 0,
-          messages: [
-            {
-              role: "user",
-              content: `Here is a page snapshot from ${baseUrl}:\n\n${snapshot.slice(0, 3000)}\n\nI want to find the most actionable page — install instructions, quickstart, agent skill, or SDK docs. Reply with ONLY the full URL to navigate to next. If the current page already has install instructions, reply "current". If nothing useful is visible, reply "none".`,
-            },
-          ],
-        }),
-        signal: AbortSignal.timeout(15000),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const text = data.choices?.[0]?.message?.content?.trim() || "";
-        return parseUrlFromLlmReply(text, baseUrl);
-      }
-    } catch {
-      // fall through to Anthropic
-    }
-  }
-
-  if (apiKey) {
-    try {
-      const { default: Anthropic } = await import("@anthropic-ai/sdk");
-      const client = new Anthropic({ apiKey });
-      const response = await client.messages.create({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 100,
-        messages: [{
-          role: "user",
-          content: `Here is a page snapshot from ${baseUrl}:\n\n${snapshot.slice(0, 3000)}\n\nI want to find the most actionable page — install instructions, quickstart, agent skill, or SDK docs. Reply with ONLY the full URL to navigate to next. If the current page already has install instructions, reply "current". If nothing useful is visible, reply "none".`,
-        }],
-      });
-      const text = response.content[0].type === "text" ? response.content[0].text.trim() : "";
-      return parseUrlFromLlmReply(text, baseUrl);
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function parseUrlFromLlmReply(text: string, baseUrl: string): string | null {
-  if (!text || text.toLowerCase() === "none") return null;
-  if (text.toLowerCase() === "current") return "current";
-  try {
-    const url = text.startsWith("http")
-      ? text
-      : `${new URL(baseUrl).origin}${text.startsWith("/") ? "" : "/"}${text}`;
-    new URL(url); // validate
-    return url;
-  } catch {
-    return null;
-  }
-}
-
-async function fetchPageText(url: string, timeoutMs: number): Promise<string> {
-  // ── Fast path: plain fetch (works for static pages with install commands) ──
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Math.min(timeoutMs, 5000));
     const res = await fetch(url, {
       headers: { "User-Agent": "morning-stew/1.0" },
-      signal: controller.signal,
+      signal: AbortSignal.timeout(8000),
       redirect: "follow",
     });
-    clearTimeout(timeout);
-    if (res.ok) {
-      const contentType = res.headers.get("content-type") || "";
-      if (contentType.includes("text/html") || contentType.includes("text/plain")) {
-        const text = stripHtml(await res.text());
-        if (text.length >= 200 && hasInstallCommands(text)) return text.slice(0, 2000);
-      }
-    }
-  } catch {
-    // fall through
-  }
-
-  // ── OpenClaw: managed browser with structured snapshot + LLM navigation ──
-  if (await isOpenClawAvailable()) {
-    return fetchPageTextViaOpenClaw(url);
-  }
-
-  // ── Playwright fallback ──
-  return fetchPageTextViaPlaywright(url, timeoutMs);
-}
-
-async function fetchPageTextViaOpenClaw(url: string): Promise<string> {
-  try {
-    await openClawNavigate(url);
-    const landingSnapshot = await openClawSnapshot();
-
-    if (hasInstallCommands(landingSnapshot)) {
-      return landingSnapshot.slice(0, 2000);
-    }
-
-    // Ask the LLM which link to follow
-    const nextUrl = await pickBestLinkFromSnapshot(landingSnapshot, url);
-    if (nextUrl && nextUrl !== "current") {
-      console.log(`[enrich] OpenClaw navigating to: ${nextUrl}`);
-      await openClawNavigate(nextUrl);
-      const docsSnapshot = await openClawSnapshot();
-      return `${landingSnapshot.slice(0, 500)}\n\n--- Docs ---\n${docsSnapshot}`.slice(0, 2000);
-    }
-
-    return landingSnapshot.slice(0, 2000);
-  } catch (err: any) {
-    console.log(`[enrich] OpenClaw fetch failed: ${err.message}`);
-    return "";
-  }
-}
-
-async function fetchPageTextViaPlaywright(url: string, timeoutMs: number): Promise<string> {
-  try {
-    const { chromium } = await import("playwright");
-    const browser = await chromium.launch({ headless: true });
-    try {
-      const page = await browser.newPage();
-      await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
-      const landingText = (await page.evaluate(() => document.body?.innerText || ""))
-        .replace(/\s+/g, " ").trim();
-
-      if (hasInstallCommands(landingText)) return landingText.slice(0, 2000);
-
-      // Take a screenshot and ask Claude vision which link to follow
-      const nextUrl = await findDocsLinkViaVision(page, url);
-      if (nextUrl && nextUrl !== "current") {
-        console.log(`[enrich] Playwright navigating to: ${nextUrl}`);
-        await page.goto(nextUrl, { waitUntil: "networkidle", timeout: timeoutMs });
-        const docsText = (await page.evaluate(() => document.body?.innerText || ""))
-          .replace(/\s+/g, " ").trim();
-        return `${landingText.slice(0, 500)}\n\n--- Docs ---\n${docsText}`.slice(0, 2000);
-      }
-
-      return landingText.slice(0, 2000);
-    } finally {
-      await browser.close();
-    }
+    if (!res.ok) return "";
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("text/html") && !contentType.includes("text/plain")) return "";
+    return stripHtml(await res.text()).slice(0, 5000);
   } catch {
     return "";
   }
 }
 
-/**
- * Check if text contains concrete install/setup commands.
- */
-function hasInstallCommands(text: string): boolean {
-  return /npm install|pip install|cargo install|npx |git clone|brew install|yarn add/i.test(text);
-}
-
-/**
- * Playwright fallback: screenshot → Claude vision → URL.
- * Only used when OpenClaw isn't available.
- */
-async function findDocsLinkViaVision(page: import("playwright").Page, baseUrl: string): Promise<string | null> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return null;
-
-  try {
-    const screenshot = await page.screenshot({ type: "jpeg", quality: 80 });
-    const { default: Anthropic } = await import("@anthropic-ai/sdk");
-    const client = new Anthropic({ apiKey });
-    const response = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 100,
-      messages: [{
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: { type: "base64", media_type: "image/jpeg", data: screenshot.toString("base64") },
-          },
-          {
-            type: "text",
-            text: `This is a screenshot of ${baseUrl}. I want to find the page with install instructions or an agent skill. Reply with ONLY the full URL to navigate to next. If the current page already has install instructions, reply "current". If nothing useful is visible, reply "none".`,
-          },
-        ],
-      }],
-    });
-
-    const text = response.content[0].type === "text" ? response.content[0].text.trim() : "";
-    const url = parseUrlFromLlmReply(text, baseUrl);
-    if (url) console.log(`[findDocsLink] Claude vision → ${url}`);
-    return url;
-  } catch (err: any) {
-    console.log(`[findDocsLink] Vision lookup failed: ${err.message}`);
-    return null;
-  }
+async function fetchPageText(url: string, _timeoutMs: number): Promise<string> {
+  return webFetch(url);
 }
 
 function stripHtml(html: string): string {
@@ -961,267 +725,308 @@ function stripHtml(html: string): string {
     .trim();
 }
 
-// ── Deep Enrichment Agent ─────────────────────────────────────────────
+// ── Playwright fetch (JS SPA fallback) ────────────────────────────────
 
 /**
- * Fetch a page returning both raw HTML (for link extraction) and stripped text.
+ * Fetch a page using a headless Chromium browser, waiting for JS to render.
+ * If an existing Playwright Page is passed, reuses it (no extra browser launch).
+ * Returns stripped text, capped at 5000 chars.
  */
-async function fetchRawPage(url: string, timeoutMs = 8000): Promise<{ html: string; text: string } | null> {
+export async function playwrightFetch(url: string, existingPage?: import("playwright").Page): Promise<string> {
+  const { chromium } = await import("playwright");
+
+  if (existingPage) {
+    await existingPage.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+    const html = await existingPage.content();
+    return stripHtml(html).slice(0, 5000);
+  }
+
+  const browser = await chromium.launch({ headless: true });
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    const res = await fetch(url, {
-      headers: { "User-Agent": "morning-stew/1.0" },
-      signal: controller.signal,
-      redirect: "follow",
-    });
-    clearTimeout(timeout);
-    if (!res.ok) return null;
-    const html = await res.text();
-    return { html, text: stripHtml(html).slice(0, 3000) };
+    const page = await browser.newPage();
+    await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+    const html = await page.content();
+    return stripHtml(html).slice(0, 5000);
+  } finally {
+    await browser.close();
+  }
+}
+
+// ── Agent-Browser (JS SPA navigation) ─────────────────────────────────
+
+import { execFile } from "child_process";
+import { promisify } from "util";
+const execFileAsync = promisify(execFile);
+
+async function runAB(args: string[], session: string): Promise<string> {
+  const { stdout } = await execFileAsync(
+    "node_modules/.bin/agent-browser",
+    [...args, "--session", session],
+    { timeout: 120000 }
+  );
+  return stdout.trim();
+}
+
+async function runABSafe(args: string[], session: string): Promise<string> {
+  try {
+    return await runAB(args, session);
   } catch {
-    return null;
+    return "";
   }
 }
 
 /**
- * Extract anchor links from raw HTML, resolving relative URLs.
+ * Navigate to a URL using agent-browser and return the page structure
+ * (with link hrefs for navigation) plus article text if available.
  */
-function extractLinks(html: string, baseUrl: string): Array<{ url: string; text: string }> {
-  const links: Array<{ url: string; text: string }> = [];
-  const seen = new Set<string>();
-  const anchorRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>(.*?)<\/a>/gi;
-  let match;
+async function agentBrowserNavigate(url: string, session: string): Promise<string> {
+  await runAB(["open", url], session);
+  const currentUrl = await runABSafe(["get", "url"], session);
+  const snapshot = await runAB(["snapshot", "-d", "4"], session);
+  const articleText =
+    (await runABSafe(["get", "text", "article"], session)) ||
+    (await runABSafe(["get", "text", "main"], session)) ||
+    "";
 
-  while ((match = anchorRegex.exec(html)) !== null) {
-    const href = match[1];
-    const text = match[2].replace(/<[^>]+>/g, "").trim();
-
-    if (!text || text.length > 100) continue;
-    if (href.startsWith("#") || href.startsWith("javascript:")) continue;
-
-    try {
-      const resolved = new URL(href, baseUrl).toString();
-      if (seen.has(resolved)) continue;
-      seen.add(resolved);
-      links.push({ url: resolved, text });
-    } catch {
-      continue;
-    }
+  let result = `Current URL: ${currentUrl || url}\n\nPage structure:\n${snapshot.slice(0, 2000)}`;
+  if (articleText) {
+    result += `\n\nPage content:\n${articleText.slice(0, 2000)}`;
   }
-
-  return links;
+  return result;
 }
 
-/**
- * Format a structured research brief into plain text for the enrichment map.
- */
-function formatResearchBrief(brief: { summary: string; install: string; docsUrl: string; gotchas: string }): string {
-  let text = brief.summary;
-  if (brief.install) text += `\n\nInstall/Setup:\n${brief.install}`;
-  if (brief.docsUrl) text += `\n\nDocs: ${brief.docsUrl}`;
-  if (brief.gotchas) text += `\n\nGotchas: ${brief.gotchas}`;
-  return text;
-}
+// ── Deep Enrichment via Tool-Use Protocol ─────────────────────────────
 
-const RESEARCH_AGENT_PROMPT = `You are a research agent gathering information about a developer tool or library.
-
-You have been given the content of one or more web pages. Your goal is to determine whether you have enough information to write a complete research brief for an AI agent developer newsletter.
-
-A COMPLETE research brief needs:
-1. What the tool/library does (clear, specific purpose)
-2. How to install it (exact commands: npm install, pip install, git clone, etc.)
-3. Key dependencies or requirements
-4. Any gotchas or tradeoffs a developer should know
-
-Review the page content and respond with ONLY a JSON object (no markdown fences):
-
-If you have enough information:
-{
-  "status": "done",
-  "brief": {
-    "summary": "2-3 sentences on what this does and key tradeoffs",
-    "install": "exact install/setup commands, one per line",
-    "docsUrl": "best documentation URL found, or empty string",
-    "gotchas": "any important caveats, or empty string"
-  }
-}
-
-If you need more information, pick ONE link from the available links list to follow:
-{
-  "status": "follow",
-  "url": "the full URL to fetch next",
-  "reason": "what information you expect to find there (one sentence)"
-}
-
-IMPORTANT:
-- Only pick links from the "Links found on the current page" list — do not invent URLs.
-- If the current page has install commands and a clear description, respond "done" even if more info could be found.
-- If there are no promising links and you lack info, respond "done" with whatever you have.`;
-
-function buildResearchMessage(
-  originalUrl: string,
-  hops: Array<{ url: string; content: string }>,
-  availableLinks: Array<{ url: string; text: string }>
-): string {
-  let msg = `Original URL: ${originalUrl}\n\n`;
-
-  for (const hop of hops) {
-    msg += `--- Content from ${hop.url} ---\n${hop.content.slice(0, 1500)}\n\n`;
-  }
-
-  if (availableLinks.length > 0) {
-    msg += `--- Links found on the current page ---\n`;
-    for (const link of availableLinks.slice(0, 20)) {
-      msg += `- [${link.text}](${link.url})\n`;
-    }
-  }
-
-  return msg;
-}
-
-interface ResearchDecision {
-  status: "done" | "follow";
-  brief?: { summary: string; install: string; docsUrl: string; gotchas: string };
-  url?: string;
-  reason?: string;
-}
-
-async function askResearchAgent(
-  originalUrl: string,
-  hops: Array<{ url: string; content: string }>,
-  links: Array<{ url: string; text: string }>
-): Promise<ResearchDecision> {
-  const nousKey = process.env.NOUS_API_KEY;
-  if (!nousKey) return { status: "done", brief: { summary: "", install: "", docsUrl: "", gotchas: "" } };
-
-  const nousUrl = process.env.NOUS_API_URL || "https://inference-api.nousresearch.com/v1";
-  const model = process.env.NOUS_MODEL || "Hermes-4.3-36B";
-
-  try {
-    const response = await fetch(`${nousUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${nousKey}`,
+const WEB_FETCH_TOOL = {
+  type: "function" as const,
+  function: {
+    name: "web_fetch",
+    description: "Fetch a web page and return its text content with HTML tags stripped. Use this to read documentation, READMEs, install guides, etc.",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The URL to fetch" },
       },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: RESEARCH_AGENT_PROMPT },
-          { role: "user", content: buildResearchMessage(originalUrl, hops, links) },
-        ],
-        max_tokens: 500,
-        temperature: 0.1,
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
+      required: ["url"],
+    },
+  },
+};
 
-    if (!response.ok) {
-      console.log(`[deep-enrich] Hermes API error: ${response.status}`);
-      return { status: "done", brief: { summary: "", install: "", docsUrl: "", gotchas: "" } };
-    }
+const RESEARCH_SYSTEM_PROMPT = `You are a research agent for "Morning Stew", a daily newsletter for AI agent developers.
 
-    const data = await response.json();
-    const text = data.choices?.[0]?.message?.content?.trim() || "";
-    const jsonStr = text.replace(/^```json?\s*/i, "").replace(/```\s*$/, "").trim();
-    return JSON.parse(jsonStr) as ResearchDecision;
-  } catch (err) {
-    console.log(`[deep-enrich] askResearchAgent error: ${err}`);
-    return { status: "done", brief: { summary: "", install: "", docsUrl: "", gotchas: "" } };
-  }
-}
+Given a URL and its page content, investigate the tool/library and produce a structured research brief.
+
+Use the web_fetch tool to read linked pages if you need more information (docs, install guides, etc.).
+
+When you have enough information, respond with JSON (no other text):
+{
+  "what": "What the tool does (1-2 sentences)",
+  "install": "Install command (npm install, pip install, git clone, etc.)",
+  "requirements": ["list of requirements like Node.js, Python, etc."],
+  "considerations": ["any gotchas or things to know"],
+  "timeEstimate": "how long to set up (e.g., '5 min')"
+}`;
+
+const AB_NAVIGATE_TOOL = {
+  type: "function" as const,
+  function: {
+    name: "navigate",
+    description:
+      "Navigate to a URL. Returns the page structure (links with their /url: paths for navigation) and article content. " +
+      "Construct absolute URLs by combining the base domain with /url: paths shown in the snapshot.",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Full URL to navigate to" },
+      },
+      required: ["url"],
+    },
+  },
+};
+
+const AB_SYSTEM_PROMPT = `You are a research agent for "Morning Stew", a daily newsletter for AI agent developers.
+
+Given a URL, navigate the site to find installation instructions and documentation for the tool/library.
+
+Use the navigate tool to visit pages. The output shows:
+- "Current URL:" — where you are now (use this as the base domain for relative /url: paths)
+- "Page structure:" — links and elements; links show their path as /url: /some/path
+- "Page content:" — article text if available
+
+To follow a link like \`link "Docs" [ref=e5]: /url: /docs\`, call navigate with the full URL
+(e.g. https://example.com/docs).
+
+When you have enough information, respond with plain text containing:
+- What the tool does (1-2 sentences)
+- Install command (npm install, pip install, git clone, etc.)
+- Key requirements or gotchas
+
+Be concise. Stop navigating once you have install instructions and a clear description.`;
+
+const MAX_TOOL_CALLS = 15;
 
 /**
- * Deep-enrich a URL using an iterative research agent loop.
- * Hermes fetches pages and follows links until it has enough info
- * to produce a structured research brief, or hits guardrails.
+ * Deep-enrich a URL using Hermes with proper tool-use (function calling).
+ * The LLM can call web_fetch up to MAX_TOOL_CALLS times to follow links
+ * and gather information before producing a research brief.
  *
- * Short-circuits for GitHub (README) and tweet URLs (existing logic).
- * Falls back to fetchUrlContent when no NOUS_API_KEY is set.
+ * Short-circuits for GitHub (README API) and tweet URLs (existing logic).
+ * Falls back to simple webFetch when no NOUS_API_KEY is set.
  */
 export async function deepEnrichUrl(url: string): Promise<string> {
-  const MAX_HOPS = 8;
-  const HOP_TIMEOUT_MS = 8000;
-
   const parsed = new URL(url);
 
-  // Short-circuit: GitHub READMEs are already sufficient
-  if (parsed.hostname === "github.com") {
-    const readme = await fetchGitHubReadme(parsed.pathname, HOP_TIMEOUT_MS);
-    if (readme) return readme;
-  }
-
-  // Short-circuit: tweet URLs use existing fetchTweetContent
+  // Short-circuit: tweet URLs
   if (parsed.hostname === "x.com" || parsed.hostname === "twitter.com") {
     const tweetContent = await fetchTweetContent(url);
     return tweetContent.fullContent || "";
   }
 
-  // No Hermes available — fall back to single-hop
-  if (!process.env.NOUS_API_KEY) {
-    console.log(`[deep-enrich] No NOUS_API_KEY — falling back to single-hop: ${url}`);
-    return fetchUrlContent(url);
+  // No Hermes — single fetch + strip
+  const nousKey = process.env.NOUS_API_KEY;
+  if (!nousKey) {
+    console.log(`[deep-enrich] No NOUS_API_KEY — simple fetch: ${url}`);
+    return webFetch(url);
   }
 
-  console.log(`[deep-enrich] Starting agent loop for: ${url}`);
+  const nousUrl = process.env.NOUS_API_URL || "https://inference-api.nousresearch.com/v1";
+  const model = process.env.NOUS_MODEL || "Hermes-4-405B";
 
-  // ── Agent loop ──
-  const hops: Array<{ url: string; content: string }> = [];
-  let currentUrl = url;
+  // Seed with initial page content; fall back to agent-browser for JS SPAs
+  let initialContent = await webFetch(url);
+  let abSession: string | null = null;
 
-  for (let hop = 0; hop < MAX_HOPS; hop++) {
-    const page = await fetchRawPage(currentUrl, HOP_TIMEOUT_MS);
-    if (!page) {
-      // Fetch failed — try Brave fallback on first hop only
-      if (hop === 0 && getBraveApiKey()) {
-        const braveResult = await braveSearch(url, HOP_TIMEOUT_MS);
-        if (braveResult) hops.push({ url: currentUrl, content: braveResult });
+  if (initialContent.length < 200) {
+    abSession = `ms-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    console.log(`[deep-enrich] Sparse content (${initialContent.length} chars) — launching agent-browser session ${abSession} for: ${url}`);
+    try {
+      initialContent = await agentBrowserNavigate(url, abSession);
+      console.log(`[deep-enrich] agent-browser got ${initialContent.length} chars`);
+    } catch (err: any) {
+      console.log(`[deep-enrich] agent-browser failed: ${err.message} — falling back to plain content`);
+      abSession = null;
+    }
+  }
+
+  const tools = abSession ? [AB_NAVIGATE_TOOL] : [WEB_FETCH_TOOL];
+  const systemPrompt = abSession ? AB_SYSTEM_PROMPT : RESEARCH_SYSTEM_PROMPT;
+
+  console.log(`[deep-enrich] Starting tool-use loop for: ${url} (${initialContent.length} chars, mode: ${abSession ? "agent-browser" : "web-fetch"})`);
+
+  const messages: any[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: `Research this URL: ${url}\n\n${initialContent.slice(0, 4000)}` },
+  ];
+
+  let toolCalls = 0;
+
+  while (toolCalls < MAX_TOOL_CALLS) {
+    try {
+      const response = await fetch(`${nousUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${nousKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          tools,
+          max_tokens: 1500,
+          temperature: 0.1,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!response.ok) {
+        console.log(`[deep-enrich] Hermes API error: ${response.status}`);
+        break;
       }
+
+      const data = await response.json();
+      const choice = data.choices?.[0];
+      if (!choice) break;
+
+      const msg = choice.message;
+      messages.push(msg);
+
+      // If the model responds with text (no tool calls), it's done
+      if (!msg.tool_calls || msg.tool_calls.length === 0) {
+        const result = msg.content?.trim();
+        if (result) {
+          console.log(`[deep-enrich] Done after ${toolCalls} tool call(s): ${url}`);
+          return result;
+        }
+        break;
+      }
+
+      // Execute each tool call
+      for (const tc of msg.tool_calls) {
+        toolCalls++;
+        try {
+          const args = JSON.parse(tc.function.arguments);
+          let content: string;
+
+          if (tc.function.name === "navigate" && abSession) {
+            content = await agentBrowserNavigate(args.url, abSession);
+            console.log(`[deep-enrich] navigate ${toolCalls}/${MAX_TOOL_CALLS}: ${args.url} → ${content.length} chars`);
+          } else if (tc.function.name === "web_fetch") {
+            content = await webFetch(args.url);
+            console.log(`[deep-enrich] web_fetch ${toolCalls}/${MAX_TOOL_CALLS}: ${args.url} → ${content.length} chars`);
+          } else {
+            content = "(unknown tool)";
+          }
+
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: content.slice(0, 4000) || "(empty page or fetch failed)",
+          });
+        } catch (err: any) {
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `Error: ${err.message}`,
+          });
+        }
+      }
+    } catch (err: any) {
+      console.log(`[deep-enrich] Loop error: ${err.message}`);
       break;
     }
-
-    hops.push({ url: currentUrl, content: page.text });
-    const links = extractLinks(page.html, currentUrl);
-
-    const decision = await askResearchAgent(url, hops, links);
-
-    if (decision.status === "done" && decision.brief) {
-      const brief = formatResearchBrief(decision.brief);
-      if (brief.length > 0) {
-        console.log(`[deep-enrich] Done after ${hop + 1} hop(s): ${url}`);
-        return brief;
-      }
-    }
-
-    if (decision.status === "follow" && decision.url) {
-      try {
-        new URL(decision.url); // validate
-        currentUrl = decision.url;
-        console.log(`[deep-enrich] Hop ${hop + 1}: following ${currentUrl} (${decision.reason})`);
-      } catch {
-        break; // invalid URL — stop
-      }
-    } else {
-      break; // "done" with empty brief or unexpected response
-    }
   }
 
-  // Loop exhausted or exited early — synthesize from what we have
-  if (hops.length > 0) {
-    const finalDecision = await askResearchAgent(url, hops, []);
-    if (finalDecision.status === "done" && finalDecision.brief) {
-      const brief = formatResearchBrief(finalDecision.brief);
-      if (brief.length > 0) {
-        console.log(`[deep-enrich] Synthesized from ${hops.length} hop(s): ${url}`);
-        return brief;
+  // If we exhausted tool calls, ask for a final summary
+  if (toolCalls >= MAX_TOOL_CALLS) {
+    try {
+      messages.push({ role: "user", content: "Summarize what you've found. Include install instructions if available." });
+      const finalResponse = await fetch(`${nousUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${nousKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          max_tokens: 1500,
+          temperature: 0.1,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (finalResponse.ok) {
+        const data = await finalResponse.json();
+        const result = data.choices?.[0]?.message?.content?.trim();
+        if (result) {
+          console.log(`[deep-enrich] Final summary after ${toolCalls} tool calls: ${url}`);
+          return result;
+        }
       }
-    }
-    // Last resort: concatenated raw text
-    return hops.map((h) => h.content).join("\n\n").slice(0, 3000);
+    } catch {}
   }
 
-  return "";
+  return initialContent;
 }
 
 /**
@@ -1509,11 +1314,16 @@ export async function scrapeTwitterFeed(
     console.log(`[twitter] Batch ${batch} (${sourceLabel}): ${batchTweets.length} tweets, ${newTweets.length} new | ${getSpendSummary()} | discoveries: ${allDiscoveries.length}`);
 
     if (newTweets.length > 0) {
-      // Enrich URLs
-      const enrichments = await enrichTweetUrls(newTweets);
+      // Phase 1: Quick judge on tweet + URL (no deep enrichment) to filter obvious junk
+      const quickPassIds = await quickJudgeTweets(newTweets, `${sourceLabel.toLowerCase()}-b${batch}-quick`);
+      console.log(`[twitter] Quick judge: ${quickPassIds.size}/${newTweets.length} passed → will enrich only these`);
 
-      // LLM judge this batch
-      const batchDiscoveries = await judgeTweets(newTweets, enrichments, `${sourceLabel.toLowerCase()}-b${batch}`);
+      // Phase 2: Only deep-enrich URLs that passed quick judge
+      const tweetsToEnrich = newTweets.filter((t) => quickPassIds.has(t.id));
+      const enrichments = await enrichTweetUrls(tweetsToEnrich);
+
+      // Phase 3: Final judge with enriched content
+      const batchDiscoveries = await judgeTweets(newTweets, enrichments, `${sourceLabel.toLowerCase()}-b${batch}`, quickPassIds);
       allDiscoveries.push(...batchDiscoveries);
 
       console.log(`[twitter] Batch ${batch} yielded ${batchDiscoveries.length} discoveries → total: ${allDiscoveries.length}/${targetDiscoveries}`);
@@ -1610,17 +1420,53 @@ export async function scrapeXApiSearch(config: XApiSearchConfig = {}): Promise<D
   if (deduped.length === 0) return [];
 
   const enrichments = await enrichTweetUrls(deduped);
-  return judgeTweets(deduped, enrichments, "x-search");
+  return judgeTweets(deduped, enrichments, "x-search", undefined);
 }
 
-// ══════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+// QUICK JUDGE: Filter obvious junk before expensive enrichment
+// ══════════════════════════════════════════════════════════
+
+async function quickJudgeTweets(tweets: Tweet[], tag: string): Promise<Set<string>> {
+  if (!isJudgeAvailable() || tweets.length === 0) {
+    return new Set(tweets.map((t) => t.id));
+  }
+
+  console.log(`[${tag}] Quick judge (no enrichment) on ${tweets.length} tweets...`);
+
+  const inputs: JudgeInput[] = tweets.map((t) => ({
+    content: t.text,
+    source: "twitter",
+    author: t.username,
+    externalUrl: t.urls[0] || t.tweet_url,
+    engagement: t.metrics.likes + t.metrics.retweets * 2,
+  }));
+
+  const verdicts = await judgeBatch(inputs, 5);
+
+  const passedIds = new Set<string>();
+  for (let i = 0; i < tweets.length; i++) {
+    const verdict = verdicts[i];
+    if (verdict && verdict.actionable && verdict.confidence >= 0.5) {
+      passedIds.add(tweets[i].id);
+    } else if (verdict && !verdict.actionable) {
+      console.log(`[${tag}] Quick SKIP: "${tweets[i].text.slice(0, 40)}..." → ${verdict.skipReason || "not actionable"}`);
+    }
+  }
+
+  console.log(`[${tag}] Quick judge: ${passedIds.size}/${tweets.length} passed`);
+  return passedIds;
+}
+
+// ══════════════════════════════════════════════════════════
 // SHARED: LLM judging with URL-enriched context
-// ══════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
 
 async function judgeTweets(
   tweets: Tweet[],
   enrichments: Map<string, string>,
-  tag: string
+  tag: string,
+  quickPassIds?: Set<string>
 ): Promise<Discovery[]> {
   if (!isJudgeAvailable() || tweets.length === 0) {
     // No LLM — use keyword scoring as fallback
@@ -1632,9 +1478,14 @@ async function judgeTweets(
     return discoveries;
   }
 
-  console.log(`[${tag}] Running LLM judge on ${tweets.length} tweets (${enrichments.size} enriched with URL content)...`);
+  // If quickPassIds provided, filter to only those tweets (plus any without URLs)
+  const tweetsToJudge = quickPassIds
+    ? tweets.filter((t) => quickPassIds.has(t.id) || t.urls.length === 0)
+    : tweets;
 
-  const inputs: JudgeInput[] = tweets.map((t) => {
+  console.log(`[${tag}] Running LLM judge on ${tweetsToJudge.length} tweets (${enrichments.size} enriched with URL content)...`);
+
+  const inputs: JudgeInput[] = tweetsToJudge.map((t) => {
     // Build content: tweet text + enriched URL content
     let content = t.text;
     const enriched = enrichments.get(t.id);
@@ -1656,8 +1507,8 @@ async function judgeTweets(
   const discoveries: Discovery[] = [];
   let skippedCount = 0;
 
-  for (let i = 0; i < tweets.length; i++) {
-    const tweet = tweets[i];
+  for (let i = 0; i < tweetsToJudge.length; i++) {
+    const tweet = tweetsToJudge[i];
     const verdict = verdicts[i];
 
     if (verdict && verdict.actionable && verdict.confidence >= 0.5) {
@@ -1691,6 +1542,40 @@ async function judgeTweets(
 
 function verdictToDiscovery(tweet: Tweet, verdict: JudgeVerdict): Discovery {
   const primaryUrl = tweet.urls[0] || tweet.tweet_url;
+  const isGitHub = primaryUrl.includes("github.com");
+  
+  // Use verdict requirements if available, otherwise infer from URL
+  const requirements = verdict.requirements?.length 
+    ? verdict.requirements 
+    : (() => {
+        const r: string[] = [];
+        if (isGitHub) {
+          if (primaryUrl.includes("/python") || primaryUrl.includes("-py")) {
+            r.push("Python 3.8+");
+          } else if (primaryUrl.includes("/node") || primaryUrl.includes("react") || primaryUrl.includes("typescript")) {
+            r.push("Node.js 18+");
+          } else if (primaryUrl.includes("/rust") || primaryUrl.includes("/rs")) {
+            r.push("Rust toolchain");
+          }
+        }
+        return r;
+      })();
+  
+  // Use verdict considerations if available, otherwise use heuristics
+  const considerations = verdict.considerations?.length
+    ? verdict.considerations
+    : (() => {
+        const c: string[] = [];
+        if (verdict.scores) {
+          if (verdict.scores.downloadability < 0.7) {
+            c.push("Verify install instructions work before running");
+          }
+          if (verdict.scores.signal < 0.5) {
+            c.push("Low community engagement - limited documentation may exist");
+          }
+        }
+        return c;
+      })();
 
   return createDiscovery({
     id: `x-api-${tweet.id}`,
@@ -1706,6 +1591,8 @@ function verdictToDiscovery(tweet: Tweet, verdict: JudgeVerdict): Discovery {
         : primaryUrl !== tweet.tweet_url
           ? [`See ${primaryUrl}`]
           : [`See ${tweet.tweet_url}`],
+      requirements,
+      considerations,
       timeEstimate: "5 min",
     },
     source: {

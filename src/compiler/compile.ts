@@ -144,7 +144,7 @@ export async function compileNewsletter(
     twitterDiscoveries = await scrapeTwitterFeed({
       targetDiscoveries: slotsNeeded,
       batchSize: 15,        // alternate source every 15 tweets
-      maxBatches: 10,       // hard cap: 10 batches = 150 tweets max
+      maxBatches: 5,       // hard cap: 5 batches = 75 tweets max
       sinceHours: 48,
     });
     console.log(`[compile] Twitter: ${twitterDiscoveries.length} discoveries from alternating feed`);

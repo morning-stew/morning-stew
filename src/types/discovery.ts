@@ -42,6 +42,7 @@ export const DiscoverySchema = z.object({
     steps: z.array(z.string()),          // Ordered steps (runnable commands)
     requirements: z.array(z.string()).optional(),
     timeEstimate: z.string().optional(),
+    considerations: z.array(z.string()).optional(),
   }),
   
   // Source
@@ -94,12 +95,15 @@ export function toLeanDiscovery(d: Discovery & { qualityScore?: any; valueProp?:
   const lean: Record<string, any> = {
     title: d.title,
     oneLiner: d.oneLiner,
-    valueProp: (d as any).valueProp || d.oneLiner,
-    install: (() => {
-      const steps = d.install?.steps;
-      if (!steps) return d.install ?? "";
-      return steps.length === 1 ? steps[0] : steps;
-    })(),
+    what: (d as any).what || d.oneLiner,
+    why: (d as any).why || "",
+    impact: (d as any).impact || (d as any).valueProp || "",
+    install: {
+      steps: d.install?.steps || [],
+      requirements: d.install?.requirements || [],
+      timeEstimate: d.install?.timeEstimate || "",
+      considerations: (d as any).considerations || [],
+    },
     category: d.category,
     tags: d.tags || [],
     score: d.qualityScore?.total ?? 0,

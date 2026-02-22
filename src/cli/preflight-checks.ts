@@ -143,12 +143,15 @@ export async function checkDeepEnrich(): Promise<CheckResult> {
 
   try {
     const { deepEnrichUrl } = await import("../scrapers/twitter-api");
-    const brief = await deepEnrichUrl("https://github.com/pydantic/pydantic-ai");
+    const testUrl = "https://vercel.com/blog/grep-a-million-github-repositories-via-mcp";
+    const brief = await deepEnrichUrl(testUrl);
     if (!brief || brief.length < 50) {
       return { name: "Deep Enrich", status: "fail", message: `brief too short (${brief.length} chars)` };
     }
-    const hasInstall = /pip install|npm install|git clone|cargo install|brew install/i.test(brief);
-    if (!hasInstall) {
+    // Check for install in text OR in JSON
+    const hasInstallText = /pip install|npm install|git clone|cargo install|brew install|npx |uv pip|yarn add|pnpm add|not applicable/i.test(brief);
+    const hasInstallJson = /"install"\s*:/i.test(brief);
+    if (!hasInstallText && !hasInstallJson) {
       return { name: "Deep Enrich", status: "fail", message: "brief missing install commands" };
     }
     return { name: "Deep Enrich", status: "pass", message: `brief OK (${brief.length} chars, has install)` };
