@@ -22,6 +22,7 @@
     "edit-issue": "tsx -r ./src/load-env.cjs src/cli/edit-issue.ts",
     "registry": "tsx -r ./src/load-env.cjs src/cli/registry-stats.ts",
     "status": "tsx -r ./src/load-env.cjs src/cli/status.ts",
+    "diagnose": "tsx -r ./src/load-env.cjs src/cli/diagnose.ts",
     "steward": "tsx -r ./src/load-env.cjs src/cli/steward.ts",
     "preflight": "tsx -r ./src/load-env.cjs src/cli/preflight.ts",
     "hn:test": "tsx -r ./src/load-env.cjs src/cli/test-hn.ts",
