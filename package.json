@@ -31,6 +31,7 @@
     "enrich:test": "tsx -r ./src/load-env.cjs src/cli/test-web-enrich.ts",
     "enrich:list": "tsx -r ./src/load-env.cjs src/cli/enrich-list.ts",
     "enrich:apply": "tsx -r ./src/load-env.cjs src/cli/enrich-apply.ts",
+    "quality:gate": "tsx -r ./src/load-env.cjs src/cli/quality-gate.ts",
     "quality:test": "tsx -r ./src/load-env.cjs src/cli/test-quality-scoring.ts",
     "test": "vitest",
     "lint": "eslint src --ext .ts",

@@ -132,9 +132,9 @@ function main() {
       install: d.install,
       category: d.category,
       tags: d.tags,
-      score: d.score,
-      stars: d.stars,
-      url: d.url
+      score: d.qualityScore || d.score,
+      stars: d.signals?.stars || d.stars,
+      url: d.url || d.source?.url  // Handle both full and lean formats
     })),
     securityNotes: data.securityNotes
   };
