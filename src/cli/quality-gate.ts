@@ -80,6 +80,20 @@ function checkDiscovery(d: Discovery, index: number): QualityIssue[] {
     issues.push({ severity: "warning", field: "impact", message: "Missing impact statement" });
   }
 
+  // 6. Considerations - what happens after install? (NEW - agent as customer)
+  if (!d.considerations || d.considerations.length === 0) {
+    issues.push({ severity: "warning", field: "considerations", message: "Missing - what happens after install?" });
+  } else if (typeof d.considerations === 'string') {
+    if (d.considerations.length < 30) {
+      issues.push({ severity: "warning", field: "considerations", message: "Too short - should explain post-install steps" });
+    }
+  } else if (Array.isArray(d.considerations)) {
+    const c = d.considerations.join(' ');
+    if (c.length < 30) {
+      issues.push({ severity: "warning", field: "considerations", message: "Too short - should explain post-install steps" });
+    }
+  }
+
   return issues;
 }
 
