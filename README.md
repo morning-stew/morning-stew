@@ -42,20 +42,22 @@ Each issue has exactly 6 discoveries. Every discovery includes:
 
 ```json
 {
-  "id": "MS-2026-048",
+  "id": "MS-#7",
   "date": "2026-02-18",
   "discoveries": [
     {
-      "title": "team-tasks",
-      "oneLiner": "Multi-agent pipeline coordination: Linear, DAG, and Debate modes",
-      "valueProp": "Adds multi-step workflows to your agent stack",
-      "install": "pip install team-tasks",
+      "title": "engram",
+      "oneLiner": "Persistent memory system for AI coding agents",
+      "valueProp": "Adds SQLite-backed persistent memory + MCP server to any agent",
+      "install": ["brew install gentleman-programming/tap/engram"],
       "score": 4.8,
-      "url": "https://github.com/win4r/team-tasks"
+      "url": "https://github.com/Gentleman-Programming/engram"
     }
   ]
 }
 ```
+
+> **Note on issue IDs:** IDs contain `#` (e.g. `MS-#7`). URL-encode as `%23` in HTTP requests: `/v1/issues/MS-%237`
 
 ### Payment networks
 
@@ -68,7 +70,6 @@ Issues are gated with X402 micropayments. Agents pay autonomously — no human i
 
 New issues drop at **6 AM Pacific** daily.
 
----
 ---
 
 ## Development
@@ -83,7 +84,7 @@ pnpm dev               # API server with hot reload
 
 ### Pipeline CLI (`steward`)
 
-The `steward` command is the single entry point for manual pipeline control. Human in the loop now; same commands for automation later.
+The `steward` command is the single entry point for manual pipeline control.
 
 ```bash
 pnpm steward run            # Preflight → generate → save to output/
@@ -96,40 +97,80 @@ pnpm steward mss            # System status dashboard
 
 `steward run` runs preflight checks (API keys, Twitter auth) and aborts on any failure. On success it writes `{id}.json` (lean — what agents consume) and `{id}.full.json` (full internal format) to `output/`. Review, edit if needed, then publish.
 
-Lower-level scripts are still available individually (`pnpm generate`, `pnpm publish:newsletter`, `pnpm status`, `pnpm preflight`).
-
 ### Architecture
 
-- **`src/api/server.ts`** — entire API server (routes, payment middleware, cron, storage). No router split — route order matters.
+- **`src/api/server.ts`** — entire API server (routes, X402 payment middleware, cron, storage). No router split — route order matters.
 - **`src/compiler/compile.ts`** — `compileNewsletter()`: 7-phase pipeline (editor tips → Twitter → HN/GitHub → LLM judge → fallback search → curation → thinking log)
 - **`src/cli/steward.ts`** — unified pipeline CLI
 - **`src/curation/llm-judge.ts`** — Nous Hermes batch scoring against 5-point checklist
+- **`src/scrapers/twitter-api.ts`** — Twitter scraping + `deepEnrichUrl()`: agent loop that uses agent-browser (Vercel) for JS SPAs and plain fetch for static pages
 - **`src/types/`** — `Discovery`, `Newsletter`, `toLeanNewsletter()`
 - **`src/registry/`** — deduplication across past issues
 
 Storage is file-based JSON under `DATA_DIR` (env var, default `.morning-stew/`). Each issue saved as `{id}.json` (lean) + `{id}.full.json` (full). In-memory map hydrated from disk at startup.
 
+### `deepEnrichUrl` — how URL enrichment works
+
+When a tweet links to a tool, the pipeline enriches it before LLM judging:
+
+1. Plain `fetch` — fast, works for static pages and GitHub READMEs (short-circuits to GitHub API)
+2. If content < 200 chars → **agent-browser** (Vercel's headless browser CLI) spins up, renders the JS SPA, and gives Hermes a full accessibility snapshot with link refs
+3. Hermes (Nous inference) runs a tool-use loop with a `navigate(url)` tool, following links up to 15 hops to find install docs
+4. Returns a structured research brief with install command, description, gotchas
+
+The agent-browser daemon auto-starts on first use (~30s cold start), then stays warm. Each `deepEnrichUrl` call gets a unique session so concurrent enrichments don't interfere.
+
 ### Key env vars
 
-| Variable | Purpose |
-|----------|---------|
-| `DATA_DIR` | Storage root (Railway: `/data`) |
-| `NOUS_API_KEY` / `NOUS_MODEL` | LLM judge (Hermes-4.3-36B) |
-| `X_BEARER_TOKEN` + OAuth keys | Twitter scraping |
-| `RECEIVER_ADDRESS` | Solana wallet for payments |
-| `MONAD_RECEIVER_ADDRESS` | Monad EVM wallet |
-| `INTERNAL_SECRET` | Bearer token for `/internal/*` |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Generation notifications |
+| Variable | Purpose | Required |
+|----------|---------|----------|
+| `NOUS_API_KEY` | LLM judge + deepEnrichUrl agent loop (Hermes) | Yes |
+| `NOUS_MODEL` | Model override (default: `Hermes-4-405B`) | No |
+| `NOUS_API_URL` | API base override | No |
+| `X_BEARER_TOKEN` | Twitter search (read-only scraping) | Yes |
+| `X_API_KEY` / `X_API_SECRET` | Twitter OAuth 1.0a | Yes |
+| `X_ACCESS_TOKEN` / `X_ACCESS_SECRET` | Twitter OAuth 1.0a access | Yes |
+| `X_CLIENT_ID` / `X_CLIENT_SECRET` | Twitter OAuth 2.0 (token refresh) | Yes |
+| `BRAVE_API_KEY` | Web search fallback for tweets without URLs | Yes |
+| `GITHUB_TOKEN` | GitHub API (higher rate limits for README fetch) | Recommended |
+| `RECEIVER_ADDRESS` | Solana wallet address for payments | Yes (API) |
+| `MONAD_RECEIVER_ADDRESS` | Monad EVM wallet for payments | Yes (API) |
+| `MONAD_FACILITATOR_URL` | Monad facilitator (default: molandak) | No |
+| `INTERNAL_SECRET` | Bearer token for `/internal/*` endpoints | Yes (API) |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Generation notifications | No |
+| `DATA_DIR` | Storage root (Railway: `/data`) | No |
+| `DISABLE_CRON` | Set `true` to disable auto-generation | No |
+
+### Test / debug scripts
+
+```bash
+pnpm test                          # Vitest unit tests
+pnpm typecheck                     # tsc --noEmit
+pnpm preflight                     # Check all API keys and tokens
+pnpm status                        # System status dashboard
+pnpm registry                      # Registry stats (dedup tracking)
+
+# Enrichment pipeline testing
+pnpm exec tsx -r ./src/load-env.cjs src/cli/test-deep-enrich.ts <url>
+pnpm exec tsx src/cli/test-playwright-fetch.ts <url>
+pnpm exec tsx -r ./src/load-env.cjs src/cli/test-agent-browser.ts <url>
+pnpm exec tsx -r ./src/load-env.cjs src/cli/test-web-enrich.ts
+```
 
 ### Other scripts
 
 ```bash
-pnpm test              # Vitest unit tests
-pnpm typecheck         # tsc --noEmit
-pnpm status            # System status dashboard
-pnpm preflight         # Check all API keys and tokens
-pnpm registry          # Registry stats (dedup tracking)
+pnpm generate          # Run pipeline only (no preflight)
+pnpm publish:newsletter # Publish latest output to API
 ```
+
+---
+
+## Known issues / in-progress
+
+- **agent-browser cold start** — first command takes ~30s to launch the daemon. Subsequent calls are fast. The daemon sometimes spawns duplicate instances if a session is killed mid-run; fix with `pkill -9 -f "agent-browser|chrome-headless-shell"` then restart.
+- **skill.md ATA gap** — the Solana payment example in `/skill.md` doesn't show how to derive associated token accounts (`getAssociatedTokenAddress`). A fresh agent following it will get stuck at the payment step.
+- **Issue ID URL encoding** — IDs like `MS-#7` must be encoded as `MS-%237` in HTTP requests. Not yet documented in skill.md.
 
 ---
 
