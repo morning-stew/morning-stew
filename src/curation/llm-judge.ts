@@ -120,94 +120,30 @@ Respond with ONLY a JSON object (no markdown, no code fences):
 
 /**
  * Judge a single piece of content.
+ * 
+ * NOW HANDLED BY HERMES AGENT - skips LLM judge entirely.
+ * All content passes through for manual curation.
  */
 export async function judgeContent(input: JudgeInput): Promise<JudgeVerdict | null> {
-  const { apiKey, apiUrl, model } = getNousConfig();
-  if (!apiKey) {
-    console.log("[llm-judge] No NOUS_API_KEY set, skipping LLM judge");
-    return null;
-  }
-
-  const userMessage = buildUserMessage(input);
-
-  try {
-    const response = await fetch(`${apiUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userMessage },
-        ],
-        max_tokens: 500,
-        temperature: 0.1, // Low temp for consistent judgments
-      }),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "");
-      console.log(`[llm-judge] API error ${response.status}: ${errText.slice(0, 200)}`);
-      return null;
-    }
-
-    const data = await response.json();
-    const text = data.choices?.[0]?.message?.content?.trim();
-
-    if (!text) return null;
-
-    // Parse JSON — handle potential markdown wrapping
-    const jsonStr = text.replace(/^```json?\s*/i, "").replace(/```\s*$/, "").trim();
-    const verdict = JSON.parse(jsonStr) as JudgeVerdict;
-
-    return verdict;
-  } catch (error) {
-    console.log(`[llm-judge] Error judging content:`, error);
-    return null;
-  }
+  // Hermes Agent does manual curation - skip automatic LLM judge
+  console.log("[llm-judge] Skipping - handled by Hermes Agent");
+  return null;
 }
 
-/**
- * Judge a batch of content items.
- * Runs them in parallel with a concurrency limit to stay within rate limits.
- */
+// Original LLM judge code preserved but disabled - now handled by Hermes Agent
+/*
+function buildUserMessage(input: JudgeInput): string { ... }
+function parseVerdict(text: string): JudgeVerdict | null { ... }
+async function worker() { ... }
+*/
+
 export async function judgeBatch(
   inputs: JudgeInput[],
-  concurrency = 5
+  _concurrency = 5
 ): Promise<(JudgeVerdict | null)[]> {
-  if (!getNousConfig().apiKey) {
-    console.log("[llm-judge] No NOUS_API_KEY set, skipping LLM judge");
-    return inputs.map(() => null);
-  }
-
-  console.log(`[llm-judge] Judging ${inputs.length} items (concurrency=${concurrency})...`);
-
-  const results: (JudgeVerdict | null)[] = new Array(inputs.length).fill(null);
-  let idx = 0;
-
-  async function worker() {
-    while (idx < inputs.length) {
-      const i = idx++;
-      results[i] = await judgeContent(inputs[i]);
-      // Small delay to respect rate limits (100 req/min = ~600ms between)
-      await new Promise((r) => setTimeout(r, 200));
-    }
-  }
-
-  // Launch workers
-  const workers = Array.from({ length: Math.min(concurrency, inputs.length) }, () => worker());
-  await Promise.all(workers);
-
-  const actionable = results.filter((r) => r?.actionable).length;
-  const skipped = results.filter((r) => r && !r.actionable).length;
-  const failed = results.filter((r) => r === null).length;
-
-  console.log(`[llm-judge] Results: ${actionable} actionable, ${skipped} skipped, ${failed} failed`);
-
-  return results;
+  // Hermes Agent does manual curation - skip automatic LLM judge
+  console.log("[llm-judge] Batch skipped - handled by Hermes Agent");
+  return inputs.map(() => null);
 }
 
 function buildUserMessage(input: JudgeInput): string {

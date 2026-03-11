@@ -36,31 +36,8 @@ export async function checkGitHub(): Promise<CheckResult> {
 }
 
 export async function checkNous(): Promise<CheckResult> {
-  const apiKey = process.env.NOUS_API_KEY;
-  if (!apiKey) return { name: "NOUS_API_KEY", status: "fail", message: "required for LLM judge" };
-
-  const apiUrl = process.env.NOUS_API_URL || "https://inference-api.nousresearch.com/v1";
-  const model = process.env.NOUS_MODEL || "Hermes-4.3-36B";
-
-  try {
-    const res = await fetch(`${apiUrl}/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      const models = data.data?.map((m: any) => m.id) ?? [];
-      const hasModel = models.some((id: string) => id.includes(model) || model.includes(id));
-      if (hasModel) {
-        return { name: "NOUS_API_KEY", status: "pass", message: `${model} available` };
-      }
-      return { name: "NOUS_API_KEY", status: "pass", message: `key valid (model ${model} not listed; ${models.length} models found)` };
-    }
-    const errText = await res.text().catch(() => "");
-    return { name: "NOUS_API_KEY", status: "fail", message: `${res.status} ${errText.slice(0, 80)}` };
-  } catch (e: any) {
-    return { name: "NOUS_API_KEY", status: "fail", message: e.message };
-  }
+  // Hermes Agent now handles curation - NOUS_API_KEY not needed
+  return { name: "NOUS_API_KEY", status: "skip", message: "Handled by Hermes Agent" };
 }
 
 export async function checkTwitterBearer(): Promise<CheckResult> {
@@ -137,27 +114,10 @@ export async function checkBrave(): Promise<CheckResult> {
   }
 }
 
+// Deep enrichment now handled by Hermes Agent (human-in-loop) via browser tools
+// Skip the automated check - user does enrichment manually
 export async function checkDeepEnrich(): Promise<CheckResult> {
-  const apiKey = process.env.NOUS_API_KEY;
-  if (!apiKey) return { name: "Deep Enrich", status: "skip", message: "NOUS_API_KEY not set" };
-
-  try {
-    const { deepEnrichUrl } = await import("../scrapers/twitter-api");
-    const testUrl = "https://vercel.com/blog/grep-a-million-github-repositories-via-mcp";
-    const brief = await deepEnrichUrl(testUrl);
-    if (!brief || brief.length < 50) {
-      return { name: "Deep Enrich", status: "fail", message: `brief too short (${brief.length} chars)` };
-    }
-    // Check for install in text OR in JSON
-    const hasInstallText = /pip install|npm install|git clone|cargo install|brew install|npx |uv pip|yarn add|pnpm add|not applicable/i.test(brief);
-    const hasInstallJson = /"install"\s*:/i.test(brief);
-    if (!hasInstallText && !hasInstallJson) {
-      return { name: "Deep Enrich", status: "fail", message: "brief missing install commands" };
-    }
-    return { name: "Deep Enrich", status: "pass", message: `brief OK (${brief.length} chars, has install)` };
-  } catch (e: any) {
-    return { name: "Deep Enrich", status: "fail", message: e.message };
-  }
+  return { name: "Deep Enrich", status: "skip", message: "Handled by Hermes Agent via browser" };
 }
 
 /**
