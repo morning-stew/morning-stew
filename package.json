@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "echo 'TypeScript checking...' && tsc --noEmit",
+    "build": "tsc",
+    "vercel-build": "tsc",
     "dev": "tsx watch -r ./src/load-env.cjs src/api/server.ts",
     "start": "tsx -r ./src/load-env.cjs src/api/server.ts",
     "generate": "tsx -r ./src/load-env.cjs src/cli/generate.ts",

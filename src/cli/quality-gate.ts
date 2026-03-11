@@ -6,8 +6,8 @@
  * This is where "the agent as customer" mindset lives.
  */
 
-import fs from "fs";
-import path from "path";
+import * as fs from "fs";
+import * as path from "path";
 
 const OUTPUT_DIR = path.join(process.cwd(), "output");
 
@@ -23,6 +23,14 @@ interface Discovery {
     timeEstimate?: string;
     considerations?: string[];
   };
+  considerations?: string[];
+  publisher?: {
+    github?: { handle: string; followers: number };
+    twitter?: { handle: string; followers: number };
+    stars?: number;
+  };
+  publisherTrust?: string;
+  stars?: number;
 }
 
 interface QualityIssue {
@@ -81,14 +89,15 @@ function checkDiscovery(d: Discovery, index: number): QualityIssue[] {
   }
 
   // 6. Considerations - what happens after install? (NEW - agent as customer)
-  if (!d.considerations || d.considerations.length === 0) {
+  const cons = d.considerations as string[] | string | undefined;
+  if (!cons || (Array.isArray(cons) && cons.length === 0)) {
     issues.push({ severity: "warning", field: "considerations", message: "Missing - what happens after install?" });
-  } else if (typeof d.considerations === 'string') {
-    if (d.considerations.length < 30) {
+  } else if (typeof cons === 'string') {
+    if (cons.length < 30) {
       issues.push({ severity: "warning", field: "considerations", message: "Too short - should explain post-install steps" });
     }
-  } else if (Array.isArray(d.considerations)) {
-    const c = d.considerations.join(' ');
+  } else if (Array.isArray(cons)) {
+    const c = cons.join(' ');
     if (c.length < 30) {
       issues.push({ severity: "warning", field: "considerations", message: "Too short - should explain post-install steps" });
     }
