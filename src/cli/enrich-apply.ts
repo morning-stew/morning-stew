@@ -24,8 +24,15 @@ function findLatestOutput(): string | null {
 }
 
 function parseArgs() {
-  // Get args after the script path
-  const args = process.argv.slice(process.argv[0].includes('tsx') ? 3 : 2);
+  // Find user args: scan for the script filename in argv, then slice after it
+  let startIdx = 2; // default: argv[1] = script path
+  for (let i = 1; i < process.argv.length; i++) {
+    if (process.argv[i].includes('enrich-apply')) {
+      startIdx = i + 1;
+      break;
+    }
+  }
+  const args = process.argv.slice(startIdx);
   console.log("Raw args:", args);
   const result: Record<string, string> = {};
   
